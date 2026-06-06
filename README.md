@@ -19,6 +19,10 @@ harsh/
 │   ├── bash.sh  read.sh  write.sh  edit.sh  ls.sh  grep.sh  skills.sh
 ├── skills/           # callable skills (Skills tool + /slash commands)
 │   └── <name>/SKILL.md
+├── hooks/            # directory-layout hooks (Claude Code style)
+│   └── <Event>/[<tool>/]*.sh
+├── tests/            # hermetic test harness (run.sh + *_test.sh)
+├── scripts/          # dev tooling (quality_gates.sh)
 ├── sessions/         # one directory per conversation
 │   └── <session>/
 │       ├── manifest.csv          # one line per entry (metadata)
@@ -68,6 +72,33 @@ A skill is `skills/NAME/SKILL.md` with YAML front-matter (`name`,
 `description`) and instructions. The **skills** tool loads a skill on demand;
 in the TUI a skill is also reachable as a `/NAME` slash command, à la Claude
 Code.
+
+### Hooks
+
+Hooks let you observe and gate the loop, Claude-Code style, with a pure
+directory layout — no config file to parse. Drop an executable `*.sh` into the
+directory for an event and harsh runs it at that point, feeding the event as
+JSON on stdin:
+
+```
+hooks/
+├── SessionStart/        once, when a session is created (inject opening context)
+├── UserPromptSubmit/    before a prompt is recorded (gate it / add context)
+├── PreToolUse/          before any tool call
+│   └── bash/            ... only before the `bash` tool (per-tool scoping)
+├── PostToolUse/         after a tool call (append feedback)
+└── Stop/                when a turn ends (force another turn)
+```
+
+A hook's **exit code** is its decision: `2` blocks (its stdout is the reason),
+`0` allows (stdout is collected as context), anything else is a logged,
+non-blocking error. Blocking means: reject the prompt (`UserPromptSubmit`), skip
+the tool and feed the reason back to the model (`PreToolUse`), or keep going
+(`Stop`). A hook in `PreToolUse/` runs before every tool; one in
+`PreToolUse/<tool>/` runs only before that tool. List installed hooks with
+`harsh.sh hooks`. Full contract and payload shapes: `hooks/README.md`. Ships
+with `PreToolUse/bash/10-guard.sh` (blocks destructive commands) and
+`SessionStart/10-context.sh` (injects cwd/git context).
 
 ## Quick start
 
@@ -139,6 +170,16 @@ Run `./harsh.sh help` for the full list. Highlights:
 | `skill SESSION NAME [ARGS]` | Load and run a skill |
 | `assemble` / `request` / `manifest` / `show` | Inspect state |
 | `tools` / `schemas` / `skills` | Discover capabilities |
+
+## Tests & quality gates
+
+```sh
+tests/run.sh                 # hermetic test suite (jq only; HARSH_MOCK, offline)
+scripts/quality_gates.sh     # shellcheck + cross-shell parse + schemas + tests
+```
+
+Every test runs in its own tempdir with a sandbox config, so a run never
+touches the real `sessions/`, `logs/`, or `hooks/`. See `tests/README.md`.
 
 ## Portability notes
 

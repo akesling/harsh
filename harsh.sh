@@ -56,11 +56,14 @@ load_config() {
     [ -n "$val" ] || die "$v is not set; define it in $cfg (see harsh.conf)"
   done
   : "${HARSH_MAX_TURNS:=127}"
+  # Hooks are optional: if the directory is absent, run_hooks is a no-op. The
+  # default sits next to the other dirs, but nothing breaks if it doesn't exist.
+  : "${HARSH_HOOKS_DIR:=$SELF_DIR/hooks}"
   : "${HARSH_SYSTEM_PROMPT:=You are harsh, a concise and capable coding agent operating through a portable shell harness. Use the provided tools to inspect and modify the project. Prefer small, verifiable steps. When done, stop.}"
   HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
   export HARSH_MODEL HARSH_MAX_TOKENS HARSH_API_URL HARSH_API_VERSION \
          HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR \
-         HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY
+         HARSH_HOOKS_DIR HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY
   have jq || die "jq is required"
 }
 
@@ -101,14 +104,56 @@ add_entry() {
     >> "$dir/manifest.csv"
 }
 
+# run_hooks EVENT PAYLOAD_JSON [TOOL]
+# Runs every hook (*.sh) under $HARSH_HOOKS_DIR/$EVENT — and, when TOOL is given,
+# also under $HARSH_HOOKS_DIR/$EVENT/$TOOL — in sorted order, feeding PAYLOAD_JSON
+# on stdin (the same contract as Claude Code hooks).
+#   exit 2      -> BLOCK: the hook's stdout is the reason; run_hooks prints it
+#                  and returns 2 (no further hooks run).
+#   exit 0      -> allow: stdout is collected as context.
+#   other       -> non-blocking error: logged to $HARSH_LOG_DIR/hooks.log, ignored.
+# On allow, run_hooks prints the collected context and returns 0.
+run_hooks() {
+  event=$1; payload=$2; tool=${3:-}
+  base="$HARSH_HOOKS_DIR/$event"
+  ctx=""
+  mkdir -p "$HARSH_LOG_DIR" 2>/dev/null || true
+  # Scan the event dir (runs for everything), then the tool-specific subdir.
+  for d in "$base" "${tool:+$base/$tool}"; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    for h in "$d"/*.sh; do
+      [ -f "$h" ] || continue
+      out=$(printf '%s' "$payload" | sh "$h" 2>>"$HARSH_LOG_DIR/hooks.log"); rc=$?
+      case $rc in
+        0) [ -n "$out" ] && ctx="$ctx$out
+" ;;
+        2) printf '%s' "$out"; return 2 ;;
+        *) warn "[hook] $event/$(basename "$h") exited $rc (ignored)" ;;
+      esac
+    done
+  done
+  printf '%s' "$ctx"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
 cmd_init() {
   name=${1:-sess-$(date -u +%Y%m%d-%H%M%S)}
   dir=$(session_dir "$name")
+  fresh=0
+  [ -d "$dir" ] || fresh=1
   mkdir -p "$dir"
   [ -f "$dir/manifest.csv" ] || : > "$dir/manifest.csv"
+  # SessionStart fires once per new session. Its output (if any) is injected as
+  # opening context — captured here so it never reaches stdout, which is the
+  # session directory path the callers consume.
+  if [ "$fresh" = 1 ]; then
+    hp=$(jq -nc --arg e SessionStart --arg s "$dir" '{event:$e,session_dir:$s}')
+    hc=$(run_hooks SessionStart "$hp") || true
+    [ -n "$hc" ] && add_entry "$dir" user text "" "$(jq -nc --arg t "$hc" '{type:"text",text:$t}')"
+  fi
   printf '%s\n' "$dir"
 }
 
@@ -141,6 +186,15 @@ cmd_sessions() {
 cmd_send() {
   dir=$(session_dir "$1"); shift; text=$*
   [ -d "$dir" ] || die "no such session: $dir (run: harsh.sh init)"
+  # UserPromptSubmit — a hook may reject the prompt (exit 2) or emit context that
+  # is injected just before it (consecutive user blocks merge into one message).
+  hp=$(jq -nc --arg e UserPromptSubmit --arg s "$dir" --arg p "$text" \
+        '{event:$e,session_dir:$s,prompt:$p}')
+  if ! hc=$(run_hooks UserPromptSubmit "$hp"); then
+    warn "[blocked] prompt rejected by hook: $hc"
+    return 1
+  fi
+  [ -n "$hc" ] && add_entry "$dir" user text "" "$(jq -nc --arg t "$hc" '{type:"text",text:$t}')"
   block=$(jq -nc --arg t "$text" '{type:"text",text:$t}')
   add_entry "$dir" user text "" "$block"
 }
@@ -241,6 +295,24 @@ cmd_skills() {
   done
 }
 
+# List installed hooks, grouped by event:  EVENT<TAB>relative/path.sh
+# A hook in EVENT/ runs for everything; one in EVENT/<tool>/ runs only for that
+# tool call (e.g. PreToolUse/bash/ fires only before the bash tool).
+cmd_hooks() {
+  d=$HARSH_HOOKS_DIR
+  [ -d "$d" ] || { say "(no hooks directory: $d)"; return 0; }
+  found=0
+  for evt in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
+    for h in "$d/$evt"/*.sh "$d/$evt"/*/*.sh; do
+      [ -f "$h" ] || continue
+      found=1
+      printf '%s\t%s\n' "$evt" "${h#"$d/"}"
+    done
+  done
+  [ "$found" = 0 ] && say "(no hooks installed in $d)"
+  return 0
+}
+
 # Build the full request body for a session (debug aid).
 cmd_request() {
   msgs=$(cmd_assemble "$1")
@@ -336,8 +408,24 @@ cmd_step() {
       id=$(printf '%s' "$tu"    | jq -r '.id')
       name=$(printf '%s' "$tu"  | jq -r '.name')
       input=$(printf '%s' "$tu" | jq -c '.input')
-      out=$(printf '%s' "$input" | sh "$HARSH_TOOLS_DIR/tool.sh" call "$name" 2>&1); rc=$?
-      if [ "$rc" -eq 0 ]; then err=false; else err=true; fi
+      # PreToolUse — a hook may deny the call (exit 2); its reason is fed back to
+      # the model as the (error) tool_result, and the tool is not run.
+      prepay=$(jq -nc --arg e PreToolUse --arg s "$dir" --arg n "$name" --argjson in "$input" \
+                '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in}')
+      if reason=$(run_hooks PreToolUse "$prepay" "$name"); then
+        out=$(printf '%s' "$input" | sh "$HARSH_TOOLS_DIR/tool.sh" call "$name" 2>&1); rc=$?
+        if [ "$rc" -eq 0 ]; then err=false; else err=true; fi
+        # PostToolUse — feedback (if any) is appended to the tool output.
+        postpay=$(jq -nc --arg e PostToolUse --arg s "$dir" --arg n "$name" \
+                  --argjson in "$input" --arg o "$out" --argjson er "$err" \
+                  '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in,tool_output:$o,is_error:$er}')
+        fb=$(run_hooks PostToolUse "$postpay" "$name") || true
+        [ -n "$fb" ] && out="$out
+[hook] $fb"
+      else
+        say "⛔ $name blocked by hook: $reason"
+        out="Tool call blocked by hook: $reason"; err=true
+      fi
       say "📤 $name → $(printf '%s' "$out" | head -n 4)"
       block=$(jq -nc --arg id "$id" --arg out "$out" --argjson e "$err" \
         '{type:"tool_result", tool_use_id:$id, content:$out, is_error:$e}')
@@ -351,12 +439,26 @@ cmd_step() {
 # Run the agent loop to completion (or HARSH_MAX_TURNS).
 cmd_run() {
   sess=$1
-  turns=0
+  dir=$(session_dir "$sess")
+  turns=0; stops=0
   while [ "$turns" -lt "$HARSH_MAX_TURNS" ]; do
     cmd_step "$sess"; rc=$?
     turns=$((turns + 1))
     case $rc in
-      0) return 0 ;;
+      0)
+        # Stop — a hook may force another turn (exit 2) by injecting a message,
+        # up to a small cap so it can't loop forever.
+        if [ "$stops" -lt 3 ]; then
+          sp=$(jq -nc --arg e Stop --arg s "$dir" '{event:$e,session_dir:$s}')
+          if reason=$(run_hooks Stop "$sp"); then
+            return 0
+          fi
+          stops=$((stops + 1))
+          say "↻ continuing (Stop hook): $reason"
+          add_entry "$dir" user text "" "$(jq -nc --arg t "$reason" '{type:"text",text:$t}')"
+          continue
+        fi
+        return 0 ;;
       2) continue ;;
       *) return 1 ;;
     esac
@@ -367,8 +469,7 @@ cmd_run() {
 # Send a user message then run to completion.
 cmd_ask() {
   sess=$1; shift
-  cmd_send "$sess" "$*"
-  cmd_run "$sess"
+  cmd_send "$sess" "$*" && cmd_run "$sess"
 }
 
 # Invoke a skill: load its instructions via the Skills tool, inject as a user
@@ -382,8 +483,7 @@ cmd_skill() {
     return 1
   fi
   msg=$(printf 'Please follow the "%s" skill below. Arguments: %s\n\n%s' "$name" "$args" "$content")
-  cmd_send "$sess" "$msg"
-  cmd_run "$sess"
+  cmd_send "$sess" "$msg" && cmd_run "$sess"
 }
 
 repl_help() {
@@ -392,6 +492,7 @@ REPL commands:
   <text>           send a message to the agent and run
   /tools           list available tools
   /skills          list available skills
+  /hooks           list installed hooks
   /SKILL [args]    invoke a skill (e.g. /commit, /review)
   /show            print the transcript so far
   /session         print this session's directory
@@ -430,6 +531,7 @@ cmd_repl() {
       /help)    repl_help >&2 ;;
       /tools)   cmd_tools ;;
       /skills)  cmd_skills ;;
+      /hooks)   cmd_hooks ;;
       /show)    cmd_show "$sess" ;;
       /session) printf '%s\n' "$dir" ;;
       /new)
@@ -440,8 +542,7 @@ cmd_repl() {
         case "$name" in *' '*) rest=${name#* }; name=${name%% *} ;; esac
         cmd_skill "$sess" "$name" "$rest" ;;
       *)
-        cmd_send "$sess" "$line"
-        cmd_run "$sess" ;;
+        cmd_send "$sess" "$line" && cmd_run "$sess" ;;
     esac
   done
   [ "$tty" = 1 ] && printf '[harsh] bye\n' >&2
@@ -478,11 +579,12 @@ Inspection:
   path SESSION           Print the resolved session directory.
   sessions               List existing sessions (newest first) as NAME<TAB>LABEL.
 
-Tools & skills:
+Tools, skills & hooks:
   tools                  List available tools.
   schemas                Print the tools[] JSON array.
   tool NAME              Run a tool by name (JSON input on stdin).
   skills                 List available skills / slash commands.
+  hooks                  List installed hooks, grouped by event.
 
 Other:
   config                 Show effective configuration.
@@ -532,6 +634,7 @@ case "$cmd" in
   schemas)  cmd_schemas ;;
   tool)     cmd_tool "$@" ;;
   skills)   cmd_skills ;;
+  hooks)    cmd_hooks ;;
   config)   printf 'config file: %s\n' "${CONFIG_FILE:-<defaults>}"; set | grep '^HARSH_' | grep -v API_KEY ;;
   version)  printf 'harsh %s\n' "$HARSH_VERSION" ;;
   help|-h|--help) usage ;;

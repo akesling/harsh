@@ -258,6 +258,7 @@ harsh TUI commands
   /help            this help
   /tools           list available tools
   /skills          list available skills
+  /hooks           list installed hooks
   /show            redraw the transcript (full, from the top)
   /map             conversation minimap: jump to a prompt (fzf; click or Enter)
   /browse          browse individual turns in fzf (if installed)
@@ -274,6 +275,10 @@ EOF
       redraw "$dir"; continue ;;
     /skills)
       $HARSH skills | sed 's/\t/  →  /'
+      printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
+      redraw "$dir"; continue ;;
+    /hooks)
+      $HARSH hooks | sed 's/\t/  →  /'
       printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
       redraw "$dir"; continue ;;
     /show|/redraw) redraw "$dir"; continue ;;
@@ -294,8 +299,7 @@ EOF
       $HARSH skill "$sess" "$name" "$rest"
       redraw "$dir"; continue ;;
     *)
-      $HARSH send "$sess" "$line"
-      $HARSH run "$sess"
+      $HARSH send "$sess" "$line" && $HARSH run "$sess"
       redraw "$dir"; continue ;;
   esac
 done
