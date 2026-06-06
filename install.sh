@@ -72,7 +72,7 @@ done
 # logs/ are never touched.
 if [ "$link" = 0 ]; then
   mkdir -p "$share" || { printf 'install.sh: cannot create %s\n' "$share" >&2; exit 1; }
-  for d in tools skills hooks lib; do
+  for d in tools skills hooks commands lib; do
     mkdir -p "$share/$d"
     cp -R "$REPO/$d/." "$share/$d/" || { printf 'install.sh: copy of %s failed\n' "$d" >&2; exit 1; }
   done
@@ -95,6 +95,7 @@ else
 HARSH_TOOLS_DIR="$share/tools"
 HARSH_SKILLS_DIR="$share/skills"
 HARSH_HOOKS_DIR="$share/hooks"
+HARSH_COMMANDS_DIR="$share/commands"
 HARSH_SESSIONS_DIR="$data/sessions"
 HARSH_LOG_DIR="$data/logs"
 # Model (key comes from \$ANTHROPIC_API_KEY / \$HARSH_API_KEY in the environment):

@@ -113,8 +113,7 @@ else
   # Inert palette/format fallbacks for when lib/render.sh is absent. Markdown-only
   # colors (e.g. italic) are omitted here: they're used solely by render.sh's
   # fmt_markdown, which self-defines them; the fallback fmt_markdown is plain cat.
-  C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=
-  C_BOLD=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
+  C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=; C_GUT=; C_RES=; GUTTER='|'
   fmt_markdown() { cat; }
   speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
   gutter()  { sed "s/^/$GUTTER /"; }
@@ -285,34 +284,18 @@ while :; do
     /quit|/exit|/q) break ;;
     /help)
       cat <<EOF
-harsh TUI commands
+harsh TUI
   <text>           send a message to the agent and run
-  /help            this help
-  /tools           list available tools
-  /skills          list available skills
-  /hooks           list installed hooks
-  /show            redraw the transcript (full, from the top)
-  /verbose         toggle full tool output (off by default)
-  /verbose #SEQ    expand one collapsed entry by its #id
-  /map             conversation minimap: jump to a prompt (fzf; click or Enter)
-  /browse          browse individual turns in fzf (if installed)
-  /sessions        switch to / resume another conversation (fzf picker)
-  /new             start a fresh session
   /SKILL [args]    invoke a skill (e.g. /commit, /review)
-  /quit or Ctrl-D  quit
+  /verbose         toggle full tool output;  /verbose #SEQ  expand one entry
+  /map             minimap: jump to a prompt (fzf)
+  /browse          browse turns in fzf
+  /show            redraw the transcript
+  /sessions        switch / resume (fzf picker)
+  /new             fresh session;  /quit or Ctrl-D  quit
 EOF
-      printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
-      redraw "$dir"; continue ;;
-    /tools)
-      $HARSH tools
-      printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
-      redraw "$dir"; continue ;;
-    /skills)
-      $HARSH skills | sed 's/\t/  →  /'
-      printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
-      redraw "$dir"; continue ;;
-    /hooks)
-      $HARSH hooks | sed 's/\t/  →  /'
+      printf '\nCommands (type as /NAME — SESSION is filled in automatically):\n'
+      $HARSH commands repl | sed 's/^/  \//'
       printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
       redraw "$dir"; continue ;;
     /show|/redraw) redraw "$dir"; continue ;;
@@ -338,9 +321,25 @@ EOF
     /new)
       sess=$($HARSH new); dir=$($HARSH path "$sess"); redraw "$dir"; continue ;;
     /*)
+      # Any commands/ verb is reachable as /NAME (session auto-filled when it
+      # takes one); otherwise fall back to a skill of that name.
       name=${line#/}; rest=""
       case "$name" in *' '*) rest=${name#* }; name=${name%% *} ;; esac
-      $HARSH skill "$sess" "$name" "$rest"
+      name=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9_-')
+      cline=$($HARSH commands repl | grep -E "^$name([[:space:]]|$)" | head -n1)
+      if [ -n "$cline" ]; then
+        # A repl-surfaced commands/ verb; fill in the session when it takes one.
+        case "$cline" in *SESSION*) sset=$sess ;; *) sset="" ;; esac
+        # shellcheck disable=SC2086  # sset/rest are intentionally split into args
+        $HARSH "$name" $sset $rest
+        printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
+      elif $HARSH commands | grep -qE "^$name([[:space:]]|$)"; then
+        # Exists, but it's CLI-only (e.g. reads stdin) — not meaningful here.
+        printf '%s/%s is a CLI-only command (run: harsh.sh %s …)%s\n' "$C_DIM" "$name" "$name" "$C_RST"
+        printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
+      else
+        $HARSH skill "$sess" "$name" "$rest"
+      fi
       redraw "$dir"; continue ;;
     *)
       $HARSH send "$sess" "$line" && $HARSH run "$sess"

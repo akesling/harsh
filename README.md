@@ -16,11 +16,13 @@ harsh/
 ├── harsh.conf        # configuration (sourced by harsh.sh)
 ├── tools/            # one file per tool, + tool.sh dispatcher
 │   ├── tool.sh       # every tool call runs through this
-│   ├── bash.sh  read.sh  write.sh  edit.sh  ls.sh  grep.sh  skills.sh
+│   ├── bash.sh  read.sh  write.sh  edit.sh  ls.sh  grep.sh  skills.sh  agent.sh
 ├── skills/           # callable skills (Skills tool + /slash commands)
 │   └── <name>/SKILL.md
 ├── hooks/            # directory-layout hooks (Claude Code style)
 │   └── <Event>/[<tool>/]*.sh
+├── commands/         # extensible CLI verbs (show, final, … + your own NAME.sh)
+├── lib/              # shared render helpers (sourced; not a runtime dep)
 ├── tests/            # hermetic test harness (run.sh + *_test.sh)
 ├── scripts/          # dev tooling (quality_gates.sh)
 ├── sessions/         # one directory per conversation
@@ -81,6 +83,39 @@ re-invoke harsh with the identical configuration. Result extraction uses the
 normal sessions dir, prefixed `agent-`, so they remain fully inspectable. A
 depth guard (`HARSH_AGENT_DEPTH`, cap `HARSH_AGENT_MAX_DEPTH`, default 3) rides
 along in the environment so sub-agents can't recurse forever.
+
+### Commands
+
+CLI verbs are a directory too. `harsh.sh` keeps a small set of **engine
+primitives** in-process — they mutate state or drive the loop and can't be
+externalized: `init`/`new`, `send`, `step`, `run`, `ask`, `skill`, `assemble`,
+`path` (plus `repl`/`tui`). Everything else is a drop-in `commands/NAME.sh`
+resolved from `HARSH_COMMANDS_DIR` — including the shipped derived commands
+(`show`, `final`, `outline`, `verbose`, `manifest`, `sessions`, `request`,
+`tools`, `schemas`, `tool`, `skills`, `hooks`, `config`, `version`), which are
+just instances of the mechanism.
+
+A command prints its one-line help with `--describe` (powering `harsh.sh
+commands` and `help`), and composes the primitives by calling back through
+`$HARSH_SELF` (e.g. `dir=$(sh "$HARSH_SELF" path "$1")`). Primitives are
+reserved — a command file can't shadow them. Add a verb with no fork:
+
+```sh
+# commands/cost.sh
+[ "$1" = --describe ] && { printf 'cost SESSION\tApproximate size.\n'; exit 0; }
+dir=$(sh "$HARSH_SELF" path "$1")
+printf 'bytes: %s\n' "$(cat "$dir"/[0-9]*.json | wc -c | tr -d ' ')"
+```
+
+Now `harsh.sh cost SESSION` works and appears in `help`. Commands are also
+reachable in the REPL and TUI as `/NAME` (the current session is filled in
+automatically for session-scoped ones, detected from the `--describe` usage),
+and `/help` lists them dynamically — so a new command shows up everywhere with
+no edits. A command restricts its surfaces by *where it lives*: top-level `commands/` is
+everywhere, `commands/cli/` is CLI-only, `commands/repl/` is REPL-only — no flag
+to interpret, just like hooks narrow scope with a subdirectory. `tool` lives in
+`commands/cli/` because it reads stdin, so it's never offered as a `/slash`. See
+`commands/README.md`.
 
 ### Skills
 

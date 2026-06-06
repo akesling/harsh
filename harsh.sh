@@ -34,8 +34,7 @@ else
   # Inert palette/format fallbacks for when lib/render.sh is absent. Markdown-only
   # colors (e.g. italic) are omitted here: they're used solely by render.sh's
   # fmt_markdown, which self-defines them; the fallback fmt_markdown is plain cat.
-  C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=
-  C_BOLD=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
+  C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=; C_GUT=; C_RES=; GUTTER='|'
   fmt_markdown() { cat; }
   speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
   gutter()  { sed "s/^/$GUTTER /"; }
@@ -83,6 +82,10 @@ load_config() {
   # Hooks are optional: if the directory is absent, run_hooks is a no-op. The
   # default sits next to the other dirs, but nothing breaks if it doesn't exist.
   : "${HARSH_HOOKS_DIR:=$SELF_DIR/hooks}"
+  # Extensible CLI commands and the shared render lib (defaults sit next to
+  # harsh.sh). Derived commands live in HARSH_COMMANDS_DIR as drop-in scripts.
+  : "${HARSH_COMMANDS_DIR:=$SELF_DIR/commands}"
+  : "${HARSH_LIB_DIR:=$SELF_DIR/lib}"
   : "${HARSH_SYSTEM_PROMPT:=You are harsh, a concise and capable coding agent operating through a portable shell harness. Use the provided tools to inspect and modify the project. Prefer small, verifiable steps. When done, stop.}"
   HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
   # Expose the harness itself and the resolved config to tool subprocesses, so a
@@ -93,8 +96,9 @@ load_config() {
   HARSH_CONFIG=$CONFIG_FILE
   export HARSH_MODEL HARSH_MAX_TOKENS HARSH_API_URL HARSH_API_VERSION \
          HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR \
-         HARSH_HOOKS_DIR HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY \
-         HARSH_SELF HARSH_CONFIG
+         HARSH_HOOKS_DIR HARSH_COMMANDS_DIR HARSH_LIB_DIR \
+         HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY \
+         HARSH_SELF HARSH_CONFIG HARSH_VERSION
   have jq || die "jq is required"
 }
 
@@ -167,8 +171,51 @@ run_hooks() {
   return 0
 }
 
+# Locate a command by name on a given SURFACE and print its script path (else
+# return 1). A command at the top level of $HARSH_COMMANDS_DIR is available on
+# every surface; one inside the SURFACE subdir (cli/ or repl/) is available only
+# there — placement is the declaration, the same way hooks narrow scope with a
+# subdirectory. Names are sanitized to forbid path traversal.
+resolve_command() {
+  surface=$1
+  safe=$(printf '%s' "$2" | tr -cd 'A-Za-z0-9_-')
+  [ -n "$safe" ] || return 1
+  for p in "$HARSH_COMMANDS_DIR/$safe.sh" "$HARSH_COMMANDS_DIR/$surface/$safe.sh"; do
+    [ -f "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+# Run a command on the repl surface (top level + repl/). REPL convenience.
+run_command() {
+  p=$(resolve_command repl "$1") || return 127
+  shift
+  sh "$p" "$@"
+}
+
+# Print "NAME<TAB>description" (via --describe) for the top level plus the SURFACE
+# subdir. Default cli — the CLI sees top-level + cli/ commands; pass repl for the
+# REPL/TUI set (top-level + repl/).
+list_commands() {
+  surface=${1:-cli}
+  for d in "$HARSH_COMMANDS_DIR" "$HARSH_COMMANDS_DIR/$surface"; do
+    [ -d "$d" ] || continue
+    for c in "$d"/*.sh; do
+      [ -f "$c" ] || continue
+      sh "$c" --describe 2>/dev/null || printf '%s\t(no description)\n' "$(basename "$c" .sh)"
+    done
+  done
+}
+
+# True if the command at PATH takes a SESSION as its first argument — read from
+# its --describe usage, so the REPL can fill in the current session for
+# session-scoped commands (e.g. /show) while leaving session-less ones alone.
+command_wants_session() {
+  case " $(sh "$1" --describe 2>/dev/null | cut -f1) " in *' SESSION'*) return 0 ;; *) return 1 ;; esac
+}
+
 # ---------------------------------------------------------------------------
-# commands
+# commands (engine primitives; derived commands live in $HARSH_COMMANDS_DIR)
 # ---------------------------------------------------------------------------
 cmd_init() {
   name=${1:-sess-$(date -u +%Y%m%d-%H%M%S)}
@@ -189,30 +236,6 @@ cmd_init() {
 }
 
 cmd_path() { session_dir "$1"; }
-
-# List existing sessions, newest first, one per line:
-#   NAME \t LABEL    where LABEL = "<turns> turns · <topic>"
-# Dependency-free (no fzf): a building block for scripts and the TUI picker.
-cmd_sessions() {
-  d=$HARSH_SESSIONS_DIR
-  [ -d "$d" ] || return 0
-  for m in "$d"/*/manifest.csv; do
-    [ -f "$m" ] || continue
-    sdir=$(dirname "$m"); name=$(basename "$sdir")
-    # Count non-empty manifest lines (turns). grep -c exits 1 on no match,
-    # so capture the count directly and default to 0.
-    turns=$(grep -c . "$m" 2>/dev/null); turns=${turns:-0}
-    # First user text block is the session's "topic".
-    topic=""
-    tf=$(awk -F, '$2=="user"{print $5; exit}' "$m" 2>/dev/null)
-    if [ -n "$tf" ] && [ -f "$sdir/$tf" ]; then
-      topic=$(jq -r '.block.text // ""' "$sdir/$tf" 2>/dev/null \
-                | tr '\n\t' '  ' | sed 's/^ *//; s/ *$//' | cut -c1-80)
-    fi
-    [ -n "$topic" ] || topic="(empty)"
-    printf '%s\t%s turns · %s\n' "$name" "$turns" "$topic"
-  done | sort -r
-}
 
 cmd_send() {
   dir=$(session_dir "$1"); shift; text=$*
@@ -241,152 +264,6 @@ cmd_assemble() {
       then (.[0:-1] + [(.[-1] | .content += [$e.block])])
       else (. + [{role: $e.role, content: [$e.block]}])
       end)' "$@"
-}
-
-cmd_schemas() { sh "$HARSH_TOOLS_DIR/tool.sh" schemas; }
-
-cmd_tools() {
-  cmd_schemas | jq -r '.[] | "• " + .name + " — " + (.description // "")'
-}
-
-cmd_tool() { sh "$HARSH_TOOLS_DIR/tool.sh" call "$1"; }
-
-cmd_manifest() { cat "$(session_dir "$1")/manifest.csv"; }
-
-cmd_show() {
-  dir=$(session_dir "$1")
-  for f in "$dir"/[0-9]*.json; do
-    [ -e "$f" ] || continue
-    jq -r '.role as $r | .block as $b |
-      "[" + $r + "/" + $b.type + "] " +
-      (if $b.type=="text" then $b.text
-       elif $b.type=="tool_use" then ($b.name + " " + ($b.input|tojson))
-       elif $b.type=="tool_result" then ($b.content|tostring)
-       else ($b|tojson) end)' "$f"
-  done
-}
-
-# Print a session's final assistant text — the machine-readable "result" of a
-# run. Backs the sub-agent contract (tools/agent.sh) and is generally useful.
-# jq-only: slurp the entry files and take the last assistant text block.
-cmd_final() {
-  dir=$(session_dir "$1")
-  set -- "$dir"/[0-9]*.json
-  [ -e "$1" ] || return 0
-  jq -rs '[.[] | select(.role=="assistant" and .block.type=="text") | .block.text]
-          | last // ""' "$@"
-}
-
-# Expand a single entry by sequence number — the handle shown as "#NNNN" beside
-# a collapsed tool line. Prints the full block (the tool's complete input and
-# output) so a curious user can inspect one call without flipping the whole REPL
-# into verbose mode. Accepts "7", "0007", or "#0007".
-cmd_verbose() {
-  dir=$(session_dir "$1"); want=$2
-  want=${want#\#}                       # tolerate a leading '#'
-  case "$want" in *[!0-9]*|'') warn "usage: /verbose #SEQ"; return 1 ;; esac
-  want=$(printf '%04d' "$want")         # normalize to the zero-padded filename form
-  for f in "$dir/$want"-*.json; do
-    [ -e "$f" ] || { warn "no such entry: #$want"; return 1; }
-    name=$(jq -r '.block.name // ""' "$f")
-    btype=$(jq -r '.block.type' "$f")
-    printf '%s#%s %s%s%s\n' "$C_DIM" "$want" "$btype" \
-      "$( [ -n "$name" ] && printf ' · %s' "$name" )" "$C_RST"
-    case "$btype" in
-      tool_use)    jq -r '.block.input | tojson' "$f" | gutter "$C_GUT" "$C_DIM" ;;
-      tool_result) jq -r '.block.content | tostring' "$f" | gutter "$C_GUT" "$C_RES" ;;
-      text)        jq -r '.block.text' "$f" | fmt_markdown | body ;;
-      *)           jq -r '.block | tojson' "$f" | gutter "$C_GUT" ;;
-    esac
-    return 0
-  done
-}
-
-# Conversation outline: one row per user *prompt*, each with a cheap summary of
-# the response it produced. A derived view over the same entry files that
-# `show`/`assemble` read — dependency-free (jq only, no fzf, no model call), so
-# it works under HARSH_MOCK and in plain shell pipes.
-#
-# Output: TSV, one row per prompt:   SEQ \t PROMPT \t SUMMARY
-#   SEQ      sequence number of the user/text entry (a jump target)
-#   PROMPT   first line of the prompt, trimmed
-#   SUMMARY  first line of the assistant's reply, or "ran N tool(s)" when the
-#            turn was all tool calls, or "(no response)" if nothing followed.
-cmd_outline() {
-  dir=$(session_dir "$1")
-  set -- "$dir"/[0-9]*.json
-  [ -e "$1" ] || return 0
-  # Tag each entry with its sequence (the filename's numeric prefix) so the
-  # reduce below can carry a jump target, then group from each user/text prompt
-  # up to (but not including) the next one.
-  for f in "$@"; do
-    seq=$(basename "$f"); seq=${seq%%-*}
-    jq -c --arg seq "$seq" '{seq:$seq, role:.role, block:.block}' "$f"
-  done | jq -rs '
-    # Walk entries; start a new outline row at each user/text block, then fold
-    # the following blocks into that row until the next prompt.
-    reduce .[] as $e ([];
-      if ($e.role=="user" and $e.block.type=="text")
-      then . + [{seq:$e.seq, prompt:$e.block.text, replies:[], tools:0}]
-      elif (length==0) then .   # skip anything before the first prompt
-      else
-        .[-1] as $cur |
-        (.[0:-1]) + [
-          if ($e.role=="assistant" and $e.block.type=="text")
-          then ($cur | .replies += [$e.block.text])
-          elif ($e.role=="assistant" and $e.block.type=="tool_use")
-          then ($cur | .tools += 1)
-          else $cur end
-        ]
-      end)
-    | .[]
-    | (.prompt | gsub("[\n\t]";" ") | gsub("^ +| +$";"")) as $p
-    | (if (.replies | length) > 0
-        then (.replies[0] | gsub("[\n\t]";" ") | gsub("^ +| +$";""))
-       elif .tools > 0
-        then "ran " + (.tools|tostring) + " tool" + (if .tools==1 then "" else "s" end)
-       else "(no response)" end) as $s
-    | [.seq, ($p[0:100]), ($s[0:100])] | @tsv'
-}
-
-cmd_skills() {
-  d=$HARSH_SKILLS_DIR
-  [ -d "$d" ] || { say "(no skills directory: $d)"; return 0; }
-  base=$(basename "$d")
-  for s in "$d"/*/SKILL.md "$d"/*.md; do
-    [ -e "$s" ] || continue
-    name=$(basename "$(dirname "$s")")
-    [ "$name" = "$base" ] && name=$(basename "$s" .md)
-    desc=$(sed -n 's/^description:[[:space:]]*//p' "$s" | head -n1)
-    printf '/%s\t%s\n' "$name" "$desc"
-  done
-}
-
-# List installed hooks, grouped by event:  EVENT<TAB>relative/path.sh
-# A hook in EVENT/ runs for everything; one in EVENT/<tool>/ runs only for that
-# tool call (e.g. PreToolUse/bash/ fires only before the bash tool).
-cmd_hooks() {
-  d=$HARSH_HOOKS_DIR
-  [ -d "$d" ] || { say "(no hooks directory: $d)"; return 0; }
-  found=0
-  for evt in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
-    for h in "$d/$evt"/*.sh "$d/$evt"/*/*.sh; do
-      [ -f "$h" ] || continue
-      found=1
-      printf '%s\t%s\n' "$evt" "${h#"$d/"}"
-    done
-  done
-  [ "$found" = 0 ] && say "(no hooks installed in $d)"
-  return 0
-}
-
-# Build the full request body for a session (debug aid).
-cmd_request() {
-  msgs=$(cmd_assemble "$1")
-  tools=$(sh "$HARSH_TOOLS_DIR/tool.sh" schemas 2>/dev/null); [ -n "$tools" ] || tools='[]'
-  jq -n --arg model "$HARSH_MODEL" --argjson max "$HARSH_MAX_TOKENS" \
-        --arg sys "$HARSH_SYSTEM_PROMPT" --argjson tools "$tools" --argjson msgs "$msgs" \
-        '{model:$model, max_tokens:$max, system:$sys, tools:$tools, messages:$msgs}'
 }
 
 # Call the model. Honors HARSH_MOCK for offline smoke testing.
@@ -594,22 +471,18 @@ cmd_skill() {
 
 repl_help() {
   cat <<'EOF'
-REPL commands:
+REPL:
   <text>           send a message to the agent and run
-  /tools           list available tools
-  /skills          list available skills
-  /hooks           list installed hooks
   /SKILL [args]    invoke a skill (e.g. /commit, /review)
-  /show            print the transcript so far
-  /verbose         toggle full tool output (off by default)
-  /verbose #SEQ    expand one collapsed entry by its #id
+  /verbose         toggle full tool output;  /verbose #SEQ  expand one entry
   /session         print this session's directory
-  /sessions        list past sessions (newest first)
-  /resume <ID>     switch to an existing session
+  /sessions        list past sessions;  /resume <ID>  switch
   /new             start a fresh session
-  /help            this help
-  /quit            exit (or Ctrl-D)
+  /help            this help;  /quit  exit (or Ctrl-D)
+
+Commands (type as /NAME — SESSION is filled in automatically):
 EOF
+  list_commands repl | sort | sed 's/^/  \//'
 }
 
 # Default interactive mode: a dependency-free, line-based REPL. (harsh_tui.sh
@@ -639,10 +512,6 @@ cmd_repl() {
       '') continue ;;
       /quit|/exit|/q) break ;;
       /help)    repl_help >&2 ;;
-      /tools)   cmd_tools ;;
-      /skills)  cmd_skills ;;
-      /hooks)   cmd_hooks ;;
-      /show)    cmd_show "$sess" ;;
       /verbose|/v)
         # No arg: toggle global verbose (every tool result prints in full).
         if [ -n "${HARSH_VERBOSE:-}" ]; then
@@ -652,11 +521,11 @@ cmd_repl() {
         fi ;;
       '/verbose '*|'/v '*)
         # With a #SEQ arg: expand that one entry without changing the mode.
-        cmd_verbose "$sess" "${line#* }" ;;
+        run_command verbose "$sess" "${line#* }" ;;
       /session) printf '%s\n' "$dir" ;;
       /sessions|/ls)
-        # NAME<TAB>LABEL → a numbered, readable list.
-        cmd_sessions | awk -F'\t' '{printf "  %s\t%s\n", $1, $2}' >&2
+        # NAME<TAB>LABEL → an indented, readable list.
+        run_command sessions | sed 's/^/  /' >&2
         [ "$tty" = 1 ] && printf '%sUse /resume <ID> to switch.%s\n' "$C_DIM" "$C_RST" >&2 ;;
       '/resume '*|'/switch '*)
         target=${line#* }
@@ -664,7 +533,7 @@ cmd_repl() {
         if [ -d "$tdir" ] && [ -f "$tdir/manifest.csv" ]; then
           dir=$tdir; sess=$dir
           [ "$tty" = 1 ] && printf '%s[resumed: %s]%s\n' "$C_DIM" "$sess" "$C_RST" >&2
-          cmd_show "$sess"
+          run_command show "$sess"
         else
           printf 'no such session: %s\n' "$target" >&2
         fi ;;
@@ -674,9 +543,24 @@ cmd_repl() {
         dir=$(cmd_init); sess=$dir
         [ "$tty" = 1 ] && printf '[new session: %s]\n' "$sess" >&2 ;;
       /*)
+        # Any commands/ verb is reachable as /NAME; the current session is filled
+        # in for session-scoped ones. Otherwise fall back to a skill of that name.
         name=${line#/}; rest=""
         case "$name" in *' '*) rest=${name#* }; name=${name%% *} ;; esac
-        cmd_skill "$sess" "$name" "$rest" ;;
+        if p=$(resolve_command repl "$name"); then
+          if command_wants_session "$p"; then
+            # shellcheck disable=SC2086  # split rest into positional args
+            sh "$p" "$sess" $rest
+          else
+            # shellcheck disable=SC2086
+            sh "$p" $rest
+          fi
+        elif resolve_command cli "$name" >/dev/null 2>&1; then
+          printf '%s/%s is a CLI-only command — run: harsh.sh %s …%s\n' \
+            "$C_DIM" "$name" "$name" "$C_RST" >&2
+        else
+          cmd_skill "$sess" "$name" "$rest"
+        fi ;;
       *)
         # No prompt echo: the user just typed it at the "harsh>" line directly
         # above, so repeating it only adds noise. A blank line sets the reply off.
@@ -694,51 +578,33 @@ harsh $HARSH_VERSION — a portable shell agent harness
 
 Usage: harsh.sh [-c CONFIG] [-q] [COMMAND [ARGS...]]
 
-With no command, harsh.sh starts an interactive REPL (the dependency-free
-counterpart to harsh_tui.sh).
+With no command, harsh.sh starts an interactive REPL.
 
 Interactive:
   repl [SESSION]         Line-based REPL (default when no command is given).
   tui [SESSION]          Launch the fzf chat TUI (harsh_tui.sh).
 
-Sessions:
-  init [NAME]            Create a session; prints its directory.
-  new                    Alias for init.
+Engine primitives (built in):
+  init|new [NAME]        Create a session; prints its directory.
   send SESSION TEXT...   Append a user message.
   step SESSION           Run one model turn (executes tools if requested).
   run SESSION            Run the agent loop to completion.
   ask SESSION TEXT...    send + run in one go.
   skill SESSION NAME [A] Load a skill and run it.
-
-Inspection:
   assemble SESSION       Print the Messages-API messages[] array.
-  request SESSION        Print the full request body that would be sent.
-  manifest SESSION       Print the session manifest.csv.
-  show SESSION           Print a readable transcript.
-  final SESSION          Print the last assistant message (sub-agent result).
-  verbose SESSION SEQ    Expand one entry (#SEQ) in full — tool input/output.
-  outline SESSION        Print a prompt-by-prompt outline: SEQ<TAB>PROMPT<TAB>SUMMARY.
   path SESSION           Print the resolved session directory.
-  sessions               List existing sessions (newest first) as NAME<TAB>LABEL.
 
-Tools, skills & hooks:
-  tools                  List available tools.
-  schemas                Print the tools[] JSON array.
-  tool NAME              Run a tool by name (JSON input on stdin).
-  skills                 List available skills / slash commands.
-  hooks                  List installed hooks, grouped by event.
-
-Other:
-  config                 Show effective configuration.
-  version | help
+Commands (extensible — drop a NAME.sh into \$HARSH_COMMANDS_DIR):
+EOF
+  list_commands | sort | sed 's/^/  /'
+  cat <<EOF
 
 Environment / config (see harsh.conf):
   HARSH_API_KEY / ANTHROPIC_API_KEY, HARSH_MODEL, HARSH_MAX_TOKENS,
   HARSH_SYSTEM_PROMPT, HARSH_MAX_TURNS, HARSH_MOCK (offline test mode),
   HARSH_VERBOSE (print full tool output instead of a collapsed summary).
-  Directories must be set explicitly (no inference); the shipped harsh.conf
-  defines them via $SELF_DIR (the directory containing harsh.sh):
-  HARSH_TOOLS_DIR, HARSH_SKILLS_DIR, HARSH_SESSIONS_DIR, HARSH_LOG_DIR.
+  Directories (set in harsh.conf, absolute): HARSH_TOOLS_DIR, HARSH_SKILLS_DIR,
+  HARSH_HOOKS_DIR, HARSH_COMMANDS_DIR, HARSH_SESSIONS_DIR, HARSH_LOG_DIR.
 EOF
 }
 
@@ -758,31 +624,24 @@ load_config
 
 cmd=${1:-repl}; [ $# -gt 0 ] && shift
 case "$cmd" in
+  # --- engine primitives (in-process; reserved, never shadowed) -------------
   repl)     cmd_repl "$@" ;;
   tui)      exec sh "$SELF_DIR/harsh_tui.sh" "$@" ;;
-  init)     cmd_init "$@" ;;
-  new)      cmd_init "$@" ;;
+  init|new) cmd_init "$@" ;;
   send)     cmd_send "$@" ;;
   step)     cmd_step "$@" ;;
   run)      cmd_run "$@" ;;
   ask)      cmd_ask "$@" ;;
   skill)    cmd_skill "$@" ;;
   assemble) cmd_assemble "$@" ;;
-  request)  cmd_request "$@" ;;
-  manifest) cmd_manifest "$@" ;;
-  outline)  cmd_outline "$@" ;;
-  sessions) cmd_sessions ;;
-  show)     cmd_show "$@" ;;
-  final)    cmd_final "$@" ;;
-  verbose)  cmd_verbose "$@" ;;
   path)     cmd_path "$@" ;;
-  tools)    cmd_tools ;;
-  schemas)  cmd_schemas ;;
-  tool)     cmd_tool "$@" ;;
-  skills)   cmd_skills ;;
-  hooks)    cmd_hooks ;;
-  config)   printf 'config file: %s\n' "${CONFIG_FILE:-<defaults>}"; set | grep '^HARSH_' | grep -v API_KEY ;;
-  version)  printf 'harsh %s\n' "$HARSH_VERSION" ;;
+  # --- meta -----------------------------------------------------------------
+  commands) list_commands "$@" | sort ;;
   help|-h|--help) usage ;;
-  *)        die "unknown command: $cmd (try: harsh.sh help)" ;;
+  # --- everything else: an extensible command from $HARSH_COMMANDS_DIR ------
+  *)
+    if p=$(resolve_command cli "$cmd"); then
+      exec sh "$p" "$@"
+    fi
+    die "unknown command: $cmd (try: harsh.sh help)" ;;
 esac

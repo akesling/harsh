@@ -22,7 +22,7 @@ section() { printf '\n== %s ==\n' "$1"; }
 # Collect every shell script we ship into the positional params ($@), so later
 # loops can use "$@" without word-splitting pitfalls (no arrays in POSIX sh).
 set -- harsh.sh harsh_tui.sh install.sh
-for f in tools/*.sh scripts/*.sh tests/*.sh hooks/*/*.sh hooks/*/*/*.sh; do
+for f in tools/*.sh commands/*.sh commands/*/*.sh lib/*.sh scripts/*.sh tests/*.sh hooks/*/*.sh hooks/*/*/*.sh; do
   [ -f "$f" ] && set -- "$@" "$f"
 done
 
