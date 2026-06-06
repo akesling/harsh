@@ -16,6 +16,11 @@ if [ -n "${ZSH_VERSION:-}" ]; then
 fi
 
 HARSH_VERSION=0.1.0
+# SELF_DIR locates the harsh checkout (for the repo-local config and sibling
+# scripts like harsh_tui.sh). The data directories themselves are NOT inferred
+# from it — they come from the config (see load_config / harsh.conf). An
+# installed `ha` points at its config via HARSH_CONFIG, so directory discovery
+# never depends on how harsh was invoked.
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 CONFIG_FILE=""
 
@@ -560,6 +565,7 @@ counterpart to harsh_tui.sh).
 
 Interactive:
   repl [SESSION]         Line-based REPL (default when no command is given).
+  tui [SESSION]          Launch the fzf chat TUI (harsh_tui.sh).
 
 Sessions:
   init [NAME]            Create a session; prints its directory.
@@ -616,6 +622,7 @@ load_config
 cmd=${1:-repl}; [ $# -gt 0 ] && shift
 case "$cmd" in
   repl)     cmd_repl "$@" ;;
+  tui)      exec sh "$SELF_DIR/harsh_tui.sh" "$@" ;;
   init)     cmd_init "$@" ;;
   new)      cmd_init "$@" ;;
   send)     cmd_send "$@" ;;

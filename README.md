@@ -100,6 +100,42 @@ the tool and feed the reason back to the model (`PreToolUse`), or keep going
 with `PreToolUse/bash/10-guard.sh` (blocks destructive commands) and
 `SessionStart/10-context.sh` (injects cwd/git context).
 
+## Install
+
+```sh
+git clone <repo> harsh && cd harsh
+./install.sh                 # writes a config + an `ha` launcher on your PATH
+export ANTHROPIC_API_KEY=sk-ant-...
+ha                           # REPL   (HARSH_MOCK=1 ha  to try it offline)
+ha tui                       # fzf chat TUI
+```
+
+`install.sh` copies the runtime (`harsh.sh`, `harsh_tui.sh`, `tools/`,
+`skills/`, `hooks/`) into `~/.local/share/harsh/`, writes
+`~/.config/harsh/harsh.conf` naming every directory by absolute path, and drops
+an `ha` launcher in `~/.local/bin/`. The launcher just exports `HARSH_CONFIG`
+and execs the installed `harsh.sh` — so harsh finds its directories purely from
+the config, independent of where or how `ha` is invoked (no `$PATH`/symlink
+magic). **After installing, the checkout is disposable.** Sessions and logs
+default under the install root; reinstalling refreshes program files but never
+touches your sessions.
+
+Layout:
+
+```
+~/.local/share/harsh/   harsh.sh, harsh_tui.sh, tools/, skills/, hooks/, sessions/, logs/
+~/.config/harsh/harsh.conf
+~/.local/bin/ha
+```
+
+Flags: `--prefix` (bin dir), `--name` (default `ha`), `--share` (install root),
+`--config`, `--data` (session/log dir), `--link` (run from the checkout instead
+of copying — handy while hacking on harsh), `--uninstall` (removes the launcher;
+keeps your config + data). Deps stay jq + curl + a shell.
+
+Or skip the installer entirely and run `./harsh.sh` straight from the checkout
+(it reads the repo-local `harsh.conf`).
+
 ## Quick start
 
 ```sh
