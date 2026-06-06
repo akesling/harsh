@@ -1,0 +1,24 @@
+This project is to be an agent harness like no other.  Pure portable shell.  The
+core, fully functional on its own, is a script which takes a folder of input
+files, one per turn/toolcall/etc. appropriately named, with a manifest.csv with
+one line per entry with columnar fields of the lightweight metadata necessary.
+It takes a config file which tells it where the conversation directory is, where
+a tool directory is, one file per tool, named based on tool name, each tool has
+a flag which gives a structured output of its schema, etc., a directory for
+logs, etc.  A run of the core script will output to its session directory
+(something interested in marginal additions could tail the manifest and act
+accordingly).
+
+Maximum dependencies are jq, curl, and a bash-like shell.  Bash, zsh, and ash
+are all valid and should be supported.
+
+Each tool call is run by a tool.sh script in the tools directory.
+
+A TUI is optional and provided via a harsh_tui.sh script which calls into
+harsh.sh, etc. and provides an fzf (this adds _only_ an fzf dependency), bending
+it to its will and turning it into a fully functional TUI interface.
+
+A directory can be configured to contain skills that are callable via a Skills tool
+(called via tool.sh) and available via slash commands like in Claude Code.
+
+harsh_tui.sh is a functional replacement for Claude Code for coding purposes.

@@ -1,0 +1,7 @@
+# runtime state
+sessions/*
+logs/*
+!sessions/.gitkeep
+!logs/.gitkeep
+
+local/
