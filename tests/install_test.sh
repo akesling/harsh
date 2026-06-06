@@ -28,6 +28,7 @@ test_installer_copies_runtime_and_runs() {
   [ -f "$d/share/harsh.sh" ]         || fail "harsh.sh not copied"
   [ -f "$d/share/tools/bash.sh" ]    || fail "tools not copied"
   [ -f "$d/share/hooks/README.md" ]  || fail "hooks not copied"
+  [ -f "$d/share/lib/render.sh" ]    || fail "lib not copied"
   # the launcher execs the COPY, not the checkout
   assert_contains "$(cat "$d/bin/ha")" "$d/share/harsh.sh"
   # and it runs

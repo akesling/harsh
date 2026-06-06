@@ -72,7 +72,7 @@ done
 # logs/ are never touched.
 if [ "$link" = 0 ]; then
   mkdir -p "$share" || { printf 'install.sh: cannot create %s\n' "$share" >&2; exit 1; }
-  for d in tools skills hooks; do
+  for d in tools skills hooks lib; do
     mkdir -p "$share/$d"
     cp -R "$REPO/$d/." "$share/$d/" || { printf 'install.sh: copy of %s failed\n' "$d" >&2; exit 1; }
   done

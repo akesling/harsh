@@ -103,13 +103,20 @@ esac
 # rendering helpers
 # ---------------------------------------------------------------------------
 
-# ANSI colors (disabled when stdout is not a TTY or NO_COLOR is set).
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  C_DIM=$(printf '\033[2m');    C_RST=$(printf '\033[0m')
-  C_USER=$(printf '\033[1;36m'); C_AI=$(printf '\033[1;32m')
-  C_TOOL=$(printf '\033[1;33m'); C_BAR=$(printf '\033[1;34m')
+# Shared presentation helpers (palette + fmt_markdown), kept in lib/render.sh so
+# the TUI and the core REPL never drift in look. Guarded with inert fallbacks so
+# the TUI degrades gracefully if the lib is missing.
+if [ -f "$DIR/lib/render.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$DIR/lib/render.sh"
 else
   C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=
+  C_BOLD=; C_ITAL=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
+  fmt_markdown() { cat; }
+  speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
+  gutter()  { sed "s/^/$GUTTER /"; }
+  body()    { sed 's/^/  /'; }
+  tool_oneline() { printf '%s %s\n' "$1" "$2"; }
 fi
 
 # Strip leading zeros from a numeric string (POSIX-safe). Avoids feeding a
@@ -125,31 +132,53 @@ render_transcript() {
   dir=$1; from_seq=${2:-}
   for f in "$dir"/[0-9]*.json; do
     [ -e "$f" ] || continue
+    seq=$(basename "$f"); seq=${seq%%-*}
     if [ -n "$from_seq" ]; then
-      seq=$(basename "$f"); seq=${seq%%-*}
       # Numeric compare with leading zeros stripped (POSIX; no base-conversion).
       [ "$(dec "$seq")" -ge "$(dec "$from_seq")" ] || continue
     fi
     role=$(jq -r '.role' "$f")
     btype=$(jq -r '.block.type' "$f")
+    # Prose is the content you read, so it gets a header + clean indent. Tool
+    # mechanics are skimmable, so they collapse to one dim line each — matching
+    # the REPL (cmd_step in harsh.sh) so the two never drift in look.
     case "$role:$btype" in
       user:text)
-        printf '%s\n' "${C_USER}you${C_RST}"
-        jq -r '.block.text' "$f" | sed 's/^/  /' ;;
+        printf '%syou%s\n' "$C_USER" "$C_RST"
+        jq -r '.block.text' "$f" | body "$C_USER" ;;
       assistant:text)
-        printf '%s\n' "${C_AI}harsh${C_RST}"
-        jq -r '.block.text' "$f" | sed 's/^/  /' ;;
+        # Skip empty prose blocks that accompany a tool call.
+        txt=$(jq -r '.block.text' "$f")
+        if [ -n "$(printf '%s' "$txt" | tr -d '[:space:]')" ]; then
+          printf '%sharsh%s\n' "$C_AI" "$C_RST"
+          printf '%s' "$txt" | fmt_markdown | body
+        else
+          continue
+        fi ;;
       assistant:tool_use)
         name=$(jq -r '.block.name' "$f")
-        printf '%s\n' "${C_TOOL}⚙ ${name}${C_RST}"
-        jq -r '.block.input | tojson' "$f" | sed 's/^/  /' ;;
+        input=$(jq -c '.block.input' "$f")
+        tool_oneline "$name" "$input" ;;
       *:tool_result)
-        printf '%s\n' "${C_DIM}↩ result${C_RST}"
-        # Cap long tool output so it doesn't swamp the transcript.
-        jq -r '.block.content | tostring' "$f" | sed 's/^/  /' | head -n 12 ;;
+        # Append the result's line-count to the preceding call line, tagged with
+        # its #seq handle. On error (or under HARSH_VERBOSE) show the output; on
+        # success a single glance ("→ N lines · #SEQ") suffices.
+        out=$(jq -r '.block.content | tostring' "$f")
+        iserr=$(jq -r '.block.is_error // false' "$f")
+        lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
+        if [ "$iserr" = true ]; then
+          printf '  %s→ error · #%s%s\n' "$C_TOOL" "$seq" "$C_RST"
+          printf '%s\n' "$out" | head -n 8 | gutter "$C_GUT" "$C_RES"
+        else
+          printf '  %s→ %s line%s · #%s%s\n' \
+            "$C_DIM" "$lines" "$( [ "$lines" = 1 ] || printf s )" "$seq" "$C_RST"
+          [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "$out" | gutter "$C_GUT" "$C_RES"
+        fi
+        # No trailing blank: keep the result snug under its call line.
+        continue ;;
       *)
-        printf '%s\n' "${C_DIM}${role}/${btype}${C_RST}"
-        jq -r '.block | tojson' "$f" | sed 's/^/  /' ;;
+        printf '%s%s/%s%s\n' "$C_DIM" "$role" "$btype" "$C_RST"
+        jq -r '.block | tojson' "$f" | body "$C_GUT" ;;
     esac
     printf '\n'
   done
@@ -163,10 +192,10 @@ redraw() {
   clear 2>/dev/null || printf '\033[2J\033[H'
   render_transcript "$dir" "$from_seq"
   printf '%s' "${C_BAR}"
-  printf '── harsh · %s ──' "$(basename "$dir")"
-  [ -n "$from_seq" ] && printf ' (from #%s · /show for full)' "$from_seq"
-  printf '%s\n' "${C_RST}"
-  printf '%sEnter: send · /help · /map · /browse · /quit: exit%s\n' "$C_DIM" "$C_RST"
+  printf '╶─ harsh · %s' "$(basename "$dir")"
+  [ -n "$from_seq" ] && printf ' · from #%s (/show for full)' "$from_seq"
+  printf ' ─╴%s\n' "${C_RST}"
+  printf '%sEnter: send · /verbose · /map · /browse · /help · /quit%s\n' "$C_DIM" "$C_RST"
 }
 
 # Optional fzf turn browser, bound to Ctrl-G. Read-only.
@@ -260,6 +289,8 @@ harsh TUI commands
   /skills          list available skills
   /hooks           list installed hooks
   /show            redraw the transcript (full, from the top)
+  /verbose         toggle full tool output (off by default)
+  /verbose #SEQ    expand one collapsed entry by its #id
   /map             conversation minimap: jump to a prompt (fzf; click or Enter)
   /browse          browse individual turns in fzf (if installed)
   /sessions        switch to / resume another conversation (fzf picker)
@@ -282,6 +313,16 @@ EOF
       printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
       redraw "$dir"; continue ;;
     /show|/redraw) redraw "$dir"; continue ;;
+    /verbose|/v)
+      # Toggle full tool output. Exported so render_transcript (and the core, if
+      # a turn runs) honors it; redraw reflects the change immediately.
+      if [ -n "${HARSH_VERBOSE:-}" ]; then unset HARSH_VERBOSE; else export HARSH_VERBOSE=1; fi
+      redraw "$dir"; continue ;;
+    '/verbose '*|'/v '*)
+      # Expand one entry by #SEQ without changing the mode.
+      $HARSH verbose "$sess" "${line#* }"
+      printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
+      redraw "$dir"; continue ;;
     /map|/outline)
       jump=$(map "$sess")
       if [ -n "$jump" ]; then redraw "$dir" "$jump"; else redraw "$dir"; fi

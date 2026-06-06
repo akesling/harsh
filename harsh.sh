@@ -24,6 +24,22 @@ HARSH_VERSION=0.1.0
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 CONFIG_FILE=""
 
+# Shared presentation helpers (palette + fmt_markdown), used to give the REPL
+# the same look as the TUI. Optional: the core stays fully functional without
+# it, so we guard the source and provide inert fallbacks when it's absent.
+if [ -f "$SELF_DIR/lib/render.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$SELF_DIR/lib/render.sh"
+else
+  C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=
+  C_BOLD=; C_ITAL=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
+  fmt_markdown() { cat; }
+  speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
+  gutter()  { sed "s/^/$GUTTER /"; }
+  body()    { sed 's/^/  /'; }
+  tool_oneline() { printf '%s %s\n' "$1" "$2"; }
+fi
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -240,6 +256,31 @@ cmd_show() {
   done
 }
 
+# Expand a single entry by sequence number — the handle shown as "#NNNN" beside
+# a collapsed tool line. Prints the full block (the tool's complete input and
+# output) so a curious user can inspect one call without flipping the whole REPL
+# into verbose mode. Accepts "7", "0007", or "#0007".
+cmd_verbose() {
+  dir=$(session_dir "$1"); want=$2
+  want=${want#\#}                       # tolerate a leading '#'
+  case "$want" in *[!0-9]*|'') warn "usage: /verbose #SEQ"; return 1 ;; esac
+  want=$(printf '%04d' "$want")         # normalize to the zero-padded filename form
+  for f in "$dir/$want"-*.json; do
+    [ -e "$f" ] || { warn "no such entry: #$want"; return 1; }
+    name=$(jq -r '.block.name // ""' "$f")
+    btype=$(jq -r '.block.type' "$f")
+    printf '%s#%s %s%s%s\n' "$C_DIM" "$want" "$btype" \
+      "$( [ -n "$name" ] && printf ' · %s' "$name" )" "$C_RST"
+    case "$btype" in
+      tool_use)    jq -r '.block.input | tojson' "$f" | gutter "$C_GUT" "$C_DIM" ;;
+      tool_result) jq -r '.block.content | tostring' "$f" | gutter "$C_GUT" "$C_RES" ;;
+      text)        jq -r '.block.text' "$f" | fmt_markdown | body ;;
+      *)           jq -r '.block | tojson' "$f" | gutter "$C_GUT" ;;
+    esac
+    return 0
+  done
+}
+
 # Conversation outline: one row per user *prompt*, each with a cheap summary of
 # the response it produced. A derived view over the same entry files that
 # `show`/`assemble` read — dependency-free (jq only, no fzf, no model call), so
@@ -401,8 +442,21 @@ cmd_step() {
     bname=$(printf '%s' "$block" | jq -r '.name // ""')
     add_entry "$dir" assistant "$btype" "$bname" "$block"
     case "$btype" in
-      text)     say "🤖 $(printf '%s' "$block" | jq -r '.text')" ;;
-      tool_use) say "🔧 $bname $(printf '%s' "$block" | jq -c '.input')" ;;
+      text)
+        if [ -z "${HARSH_QUIET:-}" ]; then
+          # Skip empty prose blocks the model sometimes emits alongside a tool
+          # call — they'd render as a bare "harsh" header with nothing under it.
+          txt=$(printf '%s' "$block" | jq -r '.text')
+          if [ -n "$(printf '%s' "$txt" | tr -d '[:space:]')" ]; then
+            printf '%sharsh%s\n' "$C_AI" "$C_RST"
+            printf '%s' "$txt" | fmt_markdown | body
+            printf '\n'
+          fi
+        fi ;;
+      tool_use)
+        # The compact one-liner is printed after the call runs (with its result),
+        # so we don't render anything here — see the tool_use loop below.
+        : ;;
     esac
     i=$((i + 1))
   done
@@ -413,6 +467,8 @@ cmd_step() {
       id=$(printf '%s' "$tu"    | jq -r '.id')
       name=$(printf '%s' "$tu"  | jq -r '.name')
       input=$(printf '%s' "$tu" | jq -c '.input')
+      # Compact one-line summary of this call, reused in the result line below.
+      tool_summary=$(tool_oneline "$name" "$input")
       # PreToolUse — a hook may deny the call (exit 2); its reason is fed back to
       # the model as the (error) tool_result, and the tool is not run.
       prepay=$(jq -nc --arg e PreToolUse --arg s "$dir" --arg n "$name" --argjson in "$input" \
@@ -428,13 +484,37 @@ cmd_step() {
         [ -n "$fb" ] && out="$out
 [hook] $fb"
       else
-        say "⛔ $name blocked by hook: $reason"
+        say "${C_TOOL}⛔ $name blocked by hook:${C_RST} $reason"
         out="Tool call blocked by hook: $reason"; err=true
       fi
-      say "📤 $name → $(printf '%s' "$out" | head -n 4)"
       block=$(jq -nc --arg id "$id" --arg out "$out" --argjson e "$err" \
         '{type:"tool_result", tool_use_id:$id, content:$out, is_error:$e}')
+      # The seq this entry will get is the handle users pass to /verbose to expand
+      # this call's full output. Capture it before add_entry writes the file.
+      rseq=$(next_seq "$dir")
       add_entry "$dir" user tool_result "$name" "$block"
+      if [ -z "${HARSH_QUIET:-}" ]; then
+        lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
+        # One tidy line per call, tagged with its expandable handle:
+        #   "#0007 • bash  git status → 4 lines"
+        # The full output prints inline only on error or when HARSH_VERBOSE is set;
+        # otherwise /verbose #0007 brings it back on demand.
+        printf '%s#%s%s ' "$C_DIM" "$rseq" "$C_RST"
+        printf '%s' "$tool_summary" | tr -d '\n'
+        if [ "$err" = true ]; then
+          printf '%s → error%s\n' "$C_TOOL" "$C_RST"
+          printf '%s\n' "$out" | head -n 8 | gutter "$C_GUT" "$C_RES"
+          [ "$lines" -gt 8 ] && printf '  %s… +%s more lines (/verbose #%s)%s\n' \
+            "$C_DIM" "$((lines - 8))" "$rseq" "$C_RST"
+        else
+          printf '%s → %s line%s%s\n' \
+            "$C_DIM" "$lines" "$( [ "$lines" = 1 ] || printf s )" "$C_RST"
+          # Full firehose when globally verbose.
+          if [ -n "${HARSH_VERBOSE:-}" ]; then
+            printf '%s\n' "$out" | gutter "$C_GUT" "$C_RES"
+          fi
+        fi
+      fi
     done
     return 2
   fi
@@ -459,7 +539,7 @@ cmd_run() {
             return 0
           fi
           stops=$((stops + 1))
-          say "↻ continuing (Stop hook): $reason"
+          say "${C_DIM}↻ continuing (Stop hook):${C_RST} $reason"
           add_entry "$dir" user text "" "$(jq -nc --arg t "$reason" '{type:"text",text:$t}')"
           continue
         fi
@@ -500,6 +580,8 @@ REPL commands:
   /hooks           list installed hooks
   /SKILL [args]    invoke a skill (e.g. /commit, /review)
   /show            print the transcript so far
+  /verbose         toggle full tool output (off by default)
+  /verbose #SEQ    expand one collapsed entry by its #id
   /session         print this session's directory
   /new             start a fresh session
   /help            this help
@@ -520,15 +602,15 @@ cmd_repl() {
   fi
   tty=0; [ -t 0 ] && tty=1
   if [ "$tty" = 1 ]; then
-    printf 'harsh %s — REPL · session %s\n' "$HARSH_VERSION" "$sess" >&2
-    printf 'Type a message and press Enter. /help for commands, /quit to exit.\n' >&2
+    printf '%s╶─ harsh %s · REPL · %s ─╴%s\n' "$C_BAR" "$HARSH_VERSION" "$sess" "$C_RST" >&2
+    printf '%sType a message and press Enter. /help for commands, /quit to exit.%s\n' "$C_DIM" "$C_RST" >&2
     if [ -z "$HARSH_API_KEY" ] && [ -z "${HARSH_MOCK:-}" ]; then
       printf '! No API key set — the agent cannot respond. Export ANTHROPIC_API_KEY,\n' >&2
       printf '! or set HARSH_MOCK=1 for an offline mock model.\n' >&2
     fi
   fi
   while :; do
-    [ "$tty" = 1 ] && printf 'harsh> ' >&2
+    [ "$tty" = 1 ] && printf '%sharsh>%s ' "$C_USER" "$C_RST" >&2
     IFS= read -r line || break
     case "$line" in
       '') continue ;;
@@ -538,6 +620,16 @@ cmd_repl() {
       /skills)  cmd_skills ;;
       /hooks)   cmd_hooks ;;
       /show)    cmd_show "$sess" ;;
+      /verbose|/v)
+        # No arg: toggle global verbose (every tool result prints in full).
+        if [ -n "${HARSH_VERBOSE:-}" ]; then
+          HARSH_VERBOSE=; printf '%s[verbose off]%s\n' "$C_DIM" "$C_RST" >&2
+        else
+          HARSH_VERBOSE=1; printf '%s[verbose on]%s\n' "$C_DIM" "$C_RST" >&2
+        fi ;;
+      '/verbose '*|'/v '*)
+        # With a #SEQ arg: expand that one entry without changing the mode.
+        cmd_verbose "$sess" "${line#* }" ;;
       /session) printf '%s\n' "$dir" ;;
       /new)
         dir=$(cmd_init); sess=$dir
@@ -547,10 +639,13 @@ cmd_repl() {
         case "$name" in *' '*) rest=${name#* }; name=${name%% *} ;; esac
         cmd_skill "$sess" "$name" "$rest" ;;
       *)
+        # No prompt echo: the user just typed it at the "harsh>" line directly
+        # above, so repeating it only adds noise. A blank line sets the reply off.
+        [ "$tty" = 1 ] && printf '\n' >&2
         cmd_send "$sess" "$line" && cmd_run "$sess" ;;
     esac
   done
-  [ "$tty" = 1 ] && printf '[harsh] bye\n' >&2
+  [ "$tty" = 1 ] && printf '%s%s harsh · bye%s\n' "$C_DIM" "$GUTTER" "$C_RST" >&2
   return 0
 }
 
@@ -581,6 +676,7 @@ Inspection:
   request SESSION        Print the full request body that would be sent.
   manifest SESSION       Print the session manifest.csv.
   show SESSION           Print a readable transcript.
+  verbose SESSION SEQ    Expand one entry (#SEQ) in full — tool input/output.
   outline SESSION        Print a prompt-by-prompt outline: SEQ<TAB>PROMPT<TAB>SUMMARY.
   path SESSION           Print the resolved session directory.
   sessions               List existing sessions (newest first) as NAME<TAB>LABEL.
@@ -598,7 +694,8 @@ Other:
 
 Environment / config (see harsh.conf):
   HARSH_API_KEY / ANTHROPIC_API_KEY, HARSH_MODEL, HARSH_MAX_TOKENS,
-  HARSH_SYSTEM_PROMPT, HARSH_MAX_TURNS, HARSH_MOCK (offline test mode).
+  HARSH_SYSTEM_PROMPT, HARSH_MAX_TURNS, HARSH_MOCK (offline test mode),
+  HARSH_VERBOSE (print full tool output instead of a collapsed summary).
   Directories must be set explicitly (no inference); the shipped harsh.conf
   defines them via $SELF_DIR (the directory containing harsh.sh):
   HARSH_TOOLS_DIR, HARSH_SKILLS_DIR, HARSH_SESSIONS_DIR, HARSH_LOG_DIR.
@@ -636,6 +733,7 @@ case "$cmd" in
   outline)  cmd_outline "$@" ;;
   sessions) cmd_sessions ;;
   show)     cmd_show "$@" ;;
+  verbose)  cmd_verbose "$@" ;;
   path)     cmd_path "$@" ;;
   tools)    cmd_tools ;;
   schemas)  cmd_schemas ;;
