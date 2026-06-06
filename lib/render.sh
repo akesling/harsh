@@ -94,6 +94,36 @@ tool_oneline() {
     "$C_TOOL" "$BULLET" "$_name" "$C_RST" "$C_DIM" "$_arg" "$C_RST"
 }
 
+# render_assistant TEXT — an assistant prose block: a colored "harsh" header and
+# an indented, markdown-highlighted body. Skips all-whitespace text (the model
+# sometimes emits an empty prose block alongside a tool call).
+render_assistant() {
+  [ -n "$(printf '%s' "$1" | tr -d '[:space:]')" ] || return 0
+  printf '%sharsh%s\n' "$C_AI" "$C_RST"
+  printf '%s' "$1" | fmt_markdown | body
+  printf '\n'
+}
+
+# render_tool_result SEQ NAME INPUT_JSON OUTPUT IS_ERR — the collapsed one-line
+# record of a tool call ("#SEQ • name args → N lines"), expandable later via
+# `verbose #SEQ`. On error (or under HARSH_VERBOSE) the output is shown inline,
+# gutter-prefixed; errors cap at 8 lines with a "+N more" hint.
+render_tool_result() {
+  _sum=$(tool_oneline "$2" "$3"); _out=$4; _err=$5
+  _n=$(printf '%s\n' "$_out" | wc -l | tr -d ' ')
+  printf '%s#%s%s ' "$C_DIM" "$1" "$C_RST"
+  printf '%s' "$_sum" | tr -d '\n'
+  if [ "$_err" = true ]; then
+    printf '%s → error%s\n' "$C_TOOL" "$C_RST"
+    printf '%s\n' "$_out" | head -n 8 | gutter "$C_GUT" "$C_RES"
+    [ "$_n" -gt 8 ] && printf '  %s… +%s more lines (/verbose #%s)%s\n' "$C_DIM" "$((_n - 8))" "$1" "$C_RST"
+  else
+    printf '%s → %s line%s%s\n' "$C_DIM" "$_n" "$( [ "$_n" = 1 ] || printf s )" "$C_RST"
+    [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "$_out" | gutter "$C_GUT" "$C_RES"
+  fi
+  return 0
+}
+
 # Lightweight, dependency-free markdown highlighter for assistant prose.
 # Operates line-by-line with sed (BRE only, so it stays portable across the
 # BSD/GNU split). Conservative: it styles the common inline/block forms and

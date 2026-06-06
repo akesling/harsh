@@ -1,10 +1,8 @@
 #!/usr/bin/env sh
 # harsh — a portable shell agent harness.
 #
-# The core. Fully functional on its own. Drives an LLM agent loop over a
-# session directory of one-file-per-entry conversation state plus a
-# manifest.csv of lightweight metadata. Maximum dependencies: jq, curl, and a
-# bash-like shell (bash, zsh, and ash are all supported).
+# The core harness is fully functional alone.  Sessions are directories of a
+# file per turn/entry + a manifest.csv. Deps: jq, curl, a shell.
 #
 # Usage: harsh.sh [-c CONFIG] [-q] COMMAND [ARGS...]
 # See `harsh.sh help`.
@@ -16,30 +14,29 @@ if [ -n "${ZSH_VERSION:-}" ]; then
 fi
 
 HARSH_VERSION=0.1.0
-# SELF_DIR locates the harsh checkout (for the repo-local config and sibling
-# scripts like harsh_tui.sh). The data directories themselves are NOT inferred
-# from it — they come from the config (see load_config / harsh.conf). An
-# installed `ha` points at its config via HARSH_CONFIG, so directory discovery
-# never depends on how harsh was invoked.
+# SELF_DIR locates the checkout (repo-local config, sibling scripts). Data
+# directories are NOT inferred from it — they come from the config.
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 CONFIG_FILE=""
 
-# Shared presentation helpers (palette + fmt_markdown), used to give the REPL
-# the same look as the TUI. Optional: the core stays fully functional without
-# it, so we guard the source and provide inert fallbacks when it's absent.
+# Presentation lives in lib/render.sh so the REPL and TUI share one look. It is
+# optional: when absent, these inert fallbacks keep harsh.sh fully usable on its
+# own — just without color or markdown. They cover only what harsh.sh calls
+# directly (the colors it prints, plus the two block renderers).
 if [ -f "$SELF_DIR/lib/render.sh" ]; then
   # shellcheck disable=SC1091
   . "$SELF_DIR/lib/render.sh"
 else
-  # Inert palette/format fallbacks for when lib/render.sh is absent. Markdown-only
-  # colors (e.g. italic) are omitted here: they're used solely by render.sh's
-  # fmt_markdown, which self-defines them; the fallback fmt_markdown is plain cat.
-  C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=; C_GUT=; C_RES=; GUTTER='|'
-  fmt_markdown() { cat; }
-  speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
-  gutter()  { sed "s/^/$GUTTER /"; }
-  body()    { sed 's/^/  /'; }
-  tool_oneline() { printf '%s %s\n' "$1" "$2"; }
+  C_DIM=; C_RST=; C_USER=; C_TOOL=; C_BAR=; GUTTER='|'
+  render_assistant() {
+    [ -n "$(printf '%s' "$1" | tr -d '[:space:]')" ] || return 0
+    printf 'harsh\n'; printf '%s\n' "$1" | sed 's/^/  /'
+  }
+  render_tool_result() {
+    printf '#%s %s %s\n' "$1" "$2" "$3"
+    { [ "$5" = true ] || [ -n "${HARSH_VERBOSE:-}" ]; } && printf '%s\n' "$4" | sed 's/^/  /'
+    return 0
+  }
 fi
 
 # ---------------------------------------------------------------------------
@@ -47,16 +44,13 @@ fi
 # ---------------------------------------------------------------------------
 die()  { printf 'harsh: %s\n' "$*" >&2; exit 1; }
 say()  { [ -n "${HARSH_QUIET:-}" ] || printf '%s\n' "$*"; }
-# warn() goes to stderr — use it for diagnostics inside functions whose stdout
-# is captured by command substitution (e.g. call_api), so the message reaches
-# the user instead of being swallowed into the captured value.
+# warn() → stderr, so diagnostics survive command substitution (e.g. call_api,
+# whose stdout is captured by the caller).
 warn() { printf '%s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 load_config() {
-  # SELF_DIR is exported so config files can reference it explicitly, e.g.
-  #   HARSH_TOOLS_DIR="$SELF_DIR/tools"
-  export SELF_DIR
+  export SELF_DIR   # so config files can reference it: HARSH_TOOLS_DIR="$SELF_DIR/tools"
   cfg=${HARSH_CONFIG:-}
   if [ -z "$cfg" ]; then
     for c in ./harsh.conf "$SELF_DIR/harsh.conf" "$HOME/.config/harsh/harsh.conf"; do
@@ -72,26 +66,22 @@ load_config() {
   : "${HARSH_MAX_TOKENS:=4096}"
   : "${HARSH_API_URL:=https://api.anthropic.com/v1/messages}"
   : "${HARSH_API_VERSION:=2023-06-01}"
-  # Directories are not inferred: they must be set explicitly, either in the
-  # config file or the environment. The shipped harsh.conf sets them.
+  # Data directories must be set explicitly (config or env) — never inferred.
   for v in HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR; do
     eval "val=\${$v:-}"
     [ -n "$val" ] || die "$v is not set; define it in $cfg (see harsh.conf)"
   done
   : "${HARSH_MAX_TURNS:=127}"
-  # Hooks are optional: if the directory is absent, run_hooks is a no-op. The
-  # default sits next to the other dirs, but nothing breaks if it doesn't exist.
+  # Hooks/commands/lib are optional; defaults sit next to harsh.sh. A missing
+  # hooks or commands dir simply means none are installed.
   : "${HARSH_HOOKS_DIR:=$SELF_DIR/hooks}"
-  # Extensible CLI commands and the shared render lib (defaults sit next to
-  # harsh.sh). Derived commands live in HARSH_COMMANDS_DIR as drop-in scripts.
   : "${HARSH_COMMANDS_DIR:=$SELF_DIR/commands}"
   : "${HARSH_LIB_DIR:=$SELF_DIR/lib}"
   : "${HARSH_SYSTEM_PROMPT:=You are harsh, a concise and capable coding agent operating through a portable shell harness. Use the provided tools to inspect and modify the project. Prefer small, verifiable steps. When done, stop.}"
   HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
-  # Expose the harness itself and the resolved config to tool subprocesses, so a
-  # tool (e.g. tools/agent.sh) can re-invoke harsh for a sub-session with the
-  # exact same configuration. HARSH_CONFIG is pinned to the file actually loaded
-  # so a child re-resolves identically instead of re-discovering a different one.
+  # Expose the harness path and resolved config to tool subprocesses, so a tool
+  # (e.g. tools/agent.sh) can re-invoke harsh for a sub-session with the same
+  # config. HARSH_CONFIG is pinned to the loaded file so children don't re-discover.
   HARSH_SELF="$SELF_DIR/harsh.sh"
   HARSH_CONFIG=$CONFIG_FILE
   export HARSH_MODEL HARSH_MAX_TOKENS HARSH_API_URL HARSH_API_VERSION \
@@ -139,15 +129,11 @@ add_entry() {
     >> "$dir/manifest.csv"
 }
 
-# run_hooks EVENT PAYLOAD_JSON [TOOL]
-# Runs every hook (*.sh) under $HARSH_HOOKS_DIR/$EVENT — and, when TOOL is given,
-# also under $HARSH_HOOKS_DIR/$EVENT/$TOOL — in sorted order, feeding PAYLOAD_JSON
-# on stdin (the same contract as Claude Code hooks).
-#   exit 2      -> BLOCK: the hook's stdout is the reason; run_hooks prints it
-#                  and returns 2 (no further hooks run).
-#   exit 0      -> allow: stdout is collected as context.
-#   other       -> non-blocking error: logged to $HARSH_LOG_DIR/hooks.log, ignored.
-# On allow, run_hooks prints the collected context and returns 0.
+# run_hooks EVENT PAYLOAD_JSON [TOOL] — feed PAYLOAD_JSON on stdin to each *.sh
+# under $HARSH_HOOKS_DIR/$EVENT (and the $EVENT/$TOOL subdir, if TOOL given), in
+# order. Hook exit codes (the Claude Code contract): 2 = block (its stdout is the
+# reason; stops and returns 2); 0 = allow (stdout collected as context); other =
+# error, logged to hooks.log and ignored. On allow, prints the context, returns 0.
 run_hooks() {
   event=$1; payload=$2; tool=${3:-}
   base="$HARSH_HOOKS_DIR/$event"
@@ -339,22 +325,9 @@ cmd_step() {
     btype=$(printf '%s' "$block" | jq -r '.type')
     bname=$(printf '%s' "$block" | jq -r '.name // ""')
     add_entry "$dir" assistant "$btype" "$bname" "$block"
+    # Tool calls render with their result in the loop below; here, just prose.
     case "$btype" in
-      text)
-        if [ -z "${HARSH_QUIET:-}" ]; then
-          # Skip empty prose blocks the model sometimes emits alongside a tool
-          # call — they'd render as a bare "harsh" header with nothing under it.
-          txt=$(printf '%s' "$block" | jq -r '.text')
-          if [ -n "$(printf '%s' "$txt" | tr -d '[:space:]')" ]; then
-            printf '%sharsh%s\n' "$C_AI" "$C_RST"
-            printf '%s' "$txt" | fmt_markdown | body
-            printf '\n'
-          fi
-        fi ;;
-      tool_use)
-        # The compact one-liner is printed after the call runs (with its result),
-        # so we don't render anything here — see the tool_use loop below.
-        : ;;
+      text) [ -n "${HARSH_QUIET:-}" ] || render_assistant "$(printf '%s' "$block" | jq -r '.text')" ;;
     esac
     i=$((i + 1))
   done
@@ -365,15 +338,13 @@ cmd_step() {
       id=$(printf '%s' "$tu"    | jq -r '.id')
       name=$(printf '%s' "$tu"  | jq -r '.name')
       input=$(printf '%s' "$tu" | jq -c '.input')
-      # Compact one-line summary of this call, reused in the result line below.
-      tool_summary=$(tool_oneline "$name" "$input")
       # PreToolUse — a hook may deny the call (exit 2); its reason is fed back to
       # the model as the (error) tool_result, and the tool is not run.
       prepay=$(jq -nc --arg e PreToolUse --arg s "$dir" --arg n "$name" --argjson in "$input" \
                 '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in}')
       if reason=$(run_hooks PreToolUse "$prepay" "$name"); then
         out=$(printf '%s' "$input" | sh "$HARSH_TOOLS_DIR/tool.sh" call "$name" 2>&1); rc=$?
-        if [ "$rc" -eq 0 ]; then err=false; else err=true; fi
+        err=true; [ "$rc" -eq 0 ] && err=false
         # PostToolUse — feedback (if any) is appended to the tool output.
         postpay=$(jq -nc --arg e PostToolUse --arg s "$dir" --arg n "$name" \
                   --argjson in "$input" --arg o "$out" --argjson er "$err" \
@@ -387,32 +358,10 @@ cmd_step() {
       fi
       block=$(jq -nc --arg id "$id" --arg out "$out" --argjson e "$err" \
         '{type:"tool_result", tool_use_id:$id, content:$out, is_error:$e}')
-      # The seq this entry will get is the handle users pass to /verbose to expand
-      # this call's full output. Capture it before add_entry writes the file.
+      # Capture the seq before the write — it's the #handle for `verbose`.
       rseq=$(next_seq "$dir")
       add_entry "$dir" user tool_result "$name" "$block"
-      if [ -z "${HARSH_QUIET:-}" ]; then
-        lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
-        # One tidy line per call, tagged with its expandable handle:
-        #   "#0007 • bash  git status → 4 lines"
-        # The full output prints inline only on error or when HARSH_VERBOSE is set;
-        # otherwise /verbose #0007 brings it back on demand.
-        printf '%s#%s%s ' "$C_DIM" "$rseq" "$C_RST"
-        printf '%s' "$tool_summary" | tr -d '\n'
-        if [ "$err" = true ]; then
-          printf '%s → error%s\n' "$C_TOOL" "$C_RST"
-          printf '%s\n' "$out" | head -n 8 | gutter "$C_GUT" "$C_RES"
-          [ "$lines" -gt 8 ] && printf '  %s… +%s more lines (/verbose #%s)%s\n' \
-            "$C_DIM" "$((lines - 8))" "$rseq" "$C_RST"
-        else
-          printf '%s → %s line%s%s\n' \
-            "$C_DIM" "$lines" "$( [ "$lines" = 1 ] || printf s )" "$C_RST"
-          # Full firehose when globally verbose.
-          if [ -n "${HARSH_VERBOSE:-}" ]; then
-            printf '%s\n' "$out" | gutter "$C_GUT" "$C_RES"
-          fi
-        fi
-      fi
+      [ -n "${HARSH_QUIET:-}" ] || render_tool_result "$rseq" "$name" "$input" "$out" "$err"
     done
     return 2
   fi
