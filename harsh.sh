@@ -31,8 +31,11 @@ if [ -f "$SELF_DIR/lib/render.sh" ]; then
   # shellcheck disable=SC1091
   . "$SELF_DIR/lib/render.sh"
 else
+  # Inert palette/format fallbacks for when lib/render.sh is absent. Markdown-only
+  # colors (e.g. italic) are omitted here: they're used solely by render.sh's
+  # fmt_markdown, which self-defines them; the fallback fmt_markdown is plain cat.
   C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=
-  C_BOLD=; C_ITAL=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
+  C_BOLD=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
   fmt_markdown() { cat; }
   speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
   gutter()  { sed "s/^/$GUTTER /"; }
@@ -82,9 +85,16 @@ load_config() {
   : "${HARSH_HOOKS_DIR:=$SELF_DIR/hooks}"
   : "${HARSH_SYSTEM_PROMPT:=You are harsh, a concise and capable coding agent operating through a portable shell harness. Use the provided tools to inspect and modify the project. Prefer small, verifiable steps. When done, stop.}"
   HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
+  # Expose the harness itself and the resolved config to tool subprocesses, so a
+  # tool (e.g. tools/agent.sh) can re-invoke harsh for a sub-session with the
+  # exact same configuration. HARSH_CONFIG is pinned to the file actually loaded
+  # so a child re-resolves identically instead of re-discovering a different one.
+  HARSH_SELF="$SELF_DIR/harsh.sh"
+  HARSH_CONFIG=$CONFIG_FILE
   export HARSH_MODEL HARSH_MAX_TOKENS HARSH_API_URL HARSH_API_VERSION \
          HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR \
-         HARSH_HOOKS_DIR HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY
+         HARSH_HOOKS_DIR HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY \
+         HARSH_SELF HARSH_CONFIG
   have jq || die "jq is required"
 }
 
@@ -254,6 +264,17 @@ cmd_show() {
        elif $b.type=="tool_result" then ($b.content|tostring)
        else ($b|tojson) end)' "$f"
   done
+}
+
+# Print a session's final assistant text — the machine-readable "result" of a
+# run. Backs the sub-agent contract (tools/agent.sh) and is generally useful.
+# jq-only: slurp the entry files and take the last assistant text block.
+cmd_final() {
+  dir=$(session_dir "$1")
+  set -- "$dir"/[0-9]*.json
+  [ -e "$1" ] || return 0
+  jq -rs '[.[] | select(.role=="assistant" and .block.type=="text") | .block.text]
+          | last // ""' "$@"
 }
 
 # Expand a single entry by sequence number — the handle shown as "#NNNN" beside
@@ -583,6 +604,8 @@ REPL commands:
   /verbose         toggle full tool output (off by default)
   /verbose #SEQ    expand one collapsed entry by its #id
   /session         print this session's directory
+  /sessions        list past sessions (newest first)
+  /resume <ID>     switch to an existing session
   /new             start a fresh session
   /help            this help
   /quit            exit (or Ctrl-D)
@@ -631,6 +654,22 @@ cmd_repl() {
         # With a #SEQ arg: expand that one entry without changing the mode.
         cmd_verbose "$sess" "${line#* }" ;;
       /session) printf '%s\n' "$dir" ;;
+      /sessions|/ls)
+        # NAME<TAB>LABEL → a numbered, readable list.
+        cmd_sessions | awk -F'\t' '{printf "  %s\t%s\n", $1, $2}' >&2
+        [ "$tty" = 1 ] && printf '%sUse /resume <ID> to switch.%s\n' "$C_DIM" "$C_RST" >&2 ;;
+      '/resume '*|'/switch '*)
+        target=${line#* }
+        tdir=$(session_dir "$target")
+        if [ -d "$tdir" ] && [ -f "$tdir/manifest.csv" ]; then
+          dir=$tdir; sess=$dir
+          [ "$tty" = 1 ] && printf '%s[resumed: %s]%s\n' "$C_DIM" "$sess" "$C_RST" >&2
+          cmd_show "$sess"
+        else
+          printf 'no such session: %s\n' "$target" >&2
+        fi ;;
+      /resume|/switch)
+        printf 'usage: /resume <session ID>  (see /sessions)\n' >&2 ;;
       /new)
         dir=$(cmd_init); sess=$dir
         [ "$tty" = 1 ] && printf '[new session: %s]\n' "$sess" >&2 ;;
@@ -676,6 +715,7 @@ Inspection:
   request SESSION        Print the full request body that would be sent.
   manifest SESSION       Print the session manifest.csv.
   show SESSION           Print a readable transcript.
+  final SESSION          Print the last assistant message (sub-agent result).
   verbose SESSION SEQ    Expand one entry (#SEQ) in full — tool input/output.
   outline SESSION        Print a prompt-by-prompt outline: SEQ<TAB>PROMPT<TAB>SUMMARY.
   path SESSION           Print the resolved session directory.
@@ -733,6 +773,7 @@ case "$cmd" in
   outline)  cmd_outline "$@" ;;
   sessions) cmd_sessions ;;
   show)     cmd_show "$@" ;;
+  final)    cmd_final "$@" ;;
   verbose)  cmd_verbose "$@" ;;
   path)     cmd_path "$@" ;;
   tools)    cmd_tools ;;

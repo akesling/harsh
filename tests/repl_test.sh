@@ -22,6 +22,32 @@ test_repl_slash_skill_runs() {
   assert_contains "$(hsh show rt)" 'review'
 }
 
+test_repl_sessions_lists_past_sessions() {
+  hsh new alpha-sess >/dev/null
+  printf '%s\n' '/sessions' '/quit' | hsh repl rt >/dev/null 2>&1
+  out=$(printf '%s\n' '/sessions' '/quit' | hsh repl rt 2>&1)
+  assert_contains "$out" 'alpha-sess'
+}
+
+test_repl_resume_switches_session() {
+  # Seed a target session with a distinctive message.
+  printf '%s\n' 'marker-in-target' '/quit' | hsh repl tgt-sess >/dev/null 2>&1
+  # From a different session, /resume should switch and show the target.
+  out=$(printf '%s\n' '/resume tgt-sess' '/session' '/quit' | hsh repl other-sess 2>&1)
+  assert_contains "$out" 'tgt-sess'
+  assert_contains "$out" 'marker-in-target'
+}
+
+test_repl_resume_unknown_is_reported() {
+  out=$(printf '%s\n' '/resume nope-nonexistent' '/quit' | hsh repl rt 2>&1)
+  assert_contains "$out" 'no such session'
+}
+
+test_repl_resume_without_arg_shows_usage() {
+  out=$(printf '%s\n' '/resume' '/quit' | hsh repl rt 2>&1)
+  assert_contains "$out" 'usage'
+}
+
 test_verbose_expands_entry_by_seq() {
   s=$(hnew vexp)
   hsh -q ask "$s" 'go [[tool:bash:echo verbosemarker]]' >/dev/null

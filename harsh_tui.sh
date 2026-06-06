@@ -110,8 +110,11 @@ if [ -f "$DIR/lib/render.sh" ]; then
   # shellcheck disable=SC1091
   . "$DIR/lib/render.sh"
 else
+  # Inert palette/format fallbacks for when lib/render.sh is absent. Markdown-only
+  # colors (e.g. italic) are omitted here: they're used solely by render.sh's
+  # fmt_markdown, which self-defines them; the fallback fmt_markdown is plain cat.
   C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=
-  C_BOLD=; C_ITAL=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
+  C_BOLD=; C_CODE=; C_HEAD=; C_GUT=; C_RES=; BULLET='*'; GUTTER='|'
   fmt_markdown() { cat; }
   speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
   gutter()  { sed "s/^/$GUTTER /"; }

@@ -7,6 +7,11 @@
 # This file is sourced, not executed: it must define variables/functions only
 # and have no side effects beyond that. It honors an already-set palette, so a
 # caller may pre-disable color (e.g. force NO_COLOR) before sourcing.
+#
+# This is a palette library: several colors are consumed by the sourcing scripts
+# (harsh.sh, harsh_tui.sh) rather than within this file, so disable the
+# unused-variable check file-wide.
+# shellcheck disable=SC2034
 
 # ANSI palette. Gated on: stdout is a TTY, NO_COLOR unset, and HARSH_COLOR not
 # explicitly "0". A caller wanting color on a non-TTY can set HARSH_COLOR=1.

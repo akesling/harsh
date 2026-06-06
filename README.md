@@ -64,7 +64,23 @@ Every tool is an executable `tools/NAME.sh` that:
 
 `tools/tool.sh` is the dispatcher every call goes through
 (`tool.sh schemas`, `tool.sh call NAME`). Built-in tools: `bash`, `read`,
-`write`, `edit`, `ls`, `grep`, and `skills`.
+`write`, `edit`, `ls`, `grep`, `skills`, and `agent` (sub-agents, below).
+
+### Sub-agents
+
+Sub-agents fall out of the design as *just another tool* — no special awareness
+in `harsh.sh`. `tools/agent.sh` takes `{task, label?}`, creates a fresh child
+session, runs harsh's normal loop there to completion, and returns only the
+child's **final** message. The parent's context stays clean: it sees the
+summary, not the child's intermediate steps.
+
+It works because the harness exports two things tools can rely on: `HARSH_SELF`
+(the path to `harsh.sh`) and `HARSH_CONFIG` (the resolved config), so a tool can
+re-invoke harsh with the identical configuration. Result extraction uses the
+`harsh.sh final SESSION` command (jq-only). Child sessions are written under the
+normal sessions dir, prefixed `agent-`, so they remain fully inspectable. A
+depth guard (`HARSH_AGENT_DEPTH`, cap `HARSH_AGENT_MAX_DEPTH`, default 3) rides
+along in the environment so sub-agents can't recurse forever.
 
 ### Skills
 
@@ -160,7 +176,9 @@ Running `./harsh.sh` with no command drops into a dependency-free, line-based
 REPL — the core's own interactive mode (`harsh_tui.sh` is the richer fzf
 front-end). Type a message and press Enter; the agent runs and prints as it
 goes. Slash commands: `/tools`, `/skills`, `/SKILL [args]`, `/show`,
-`/session`, `/new`, `/help`, `/quit` (or Ctrl-D). Pass a session name to
+`/session`, `/sessions`, `/resume <ID>`, `/new`, `/help`, `/quit` (or
+Ctrl-D). `/sessions` lists past conversations and `/resume <ID>` switches to
+one. Pass a session name to
 resume: `./harsh.sh repl my-session`. It also works non-interactively:
 
 ```sh
@@ -204,6 +222,7 @@ Run `./harsh.sh help` for the full list. Highlights:
 | `run SESSION` | Run the loop to completion |
 | `ask SESSION TEXT` | `send` + `run` |
 | `skill SESSION NAME [ARGS]` | Load and run a skill |
+| `final SESSION` | Print the last assistant message (sub-agent result) |
 | `assemble` / `request` / `manifest` / `show` | Inspect state |
 | `tools` / `schemas` / `skills` | Discover capabilities |
 
