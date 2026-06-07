@@ -479,6 +479,8 @@ REPL:
   /new             start a fresh session
   /help            this help;  /quit  exit (or Ctrl-D)
 
+  ↑/↓              recall earlier input (when rlwrap is installed; Ctrl-R searches)
+
 Commands (type as /NAME — SESSION is filled in automatically):
 EOF
   list_commands repl | sort | sed 's/^/  \//'
@@ -506,7 +508,22 @@ repl_sessions() {
 
 # Default interactive mode: a dependency-free, line-based REPL. (harsh_tui.sh
 # is the richer fzf interface; this needs nothing beyond the core.)
+#
+# Line editing & history (up/down arrows, Ctrl-R search, persistent history) come
+# for free from rlwrap when it's installed: on an interactive TTY we transparently
+# re-exec ourselves under rlwrap once (HARSH_RLWRAP guards against re-entry). The
+# bare `read` loop below is the portable fallback when rlwrap is absent.
 cmd_repl() {
+  if [ -t 0 ] && [ -z "${HARSH_RLWRAP:-}" ] && [ "${HARSH_NO_RLWRAP:-}" != 1 ] \
+     && command -v rlwrap >/dev/null 2>&1; then
+    _hist="${HARSH_LOG_DIR:-${SELF_DIR}/logs}/repl_history"
+    mkdir -p "$(dirname "${_hist}")" 2>/dev/null || true
+    # HARSH_CONFIG and the dir vars are already exported by load_config; carry the
+    # quiet flag too so the re-exec'd REPL behaves identically.
+    export HARSH_QUIET="${HARSH_QUIET:-}" HARSH_RLWRAP=1
+    exec rlwrap -C harsh -H "${_hist}" -s 5000 \
+      sh "${SELF_DIR}/harsh.sh" repl "$@"
+  fi
   if [ "${1:-}" != "" ]; then
     _sess=$1
     _dir=$(session_dir "${_sess}")
@@ -518,7 +535,12 @@ cmd_repl() {
   _tty=0; [ -t 0 ] && _tty=1
   if [ "${_tty}" = 1 ]; then
     printf '%s╶─ harsh %s · REPL · %s ─╴%s\n' "${C_BAR}" "${HARSH_VERSION}" "${_sess}" "${C_RST}" >&2
-    printf '%sType a message and press Enter. /help for commands, /quit to exit.%s\n' "${C_DIM}" "${C_RST}" >&2
+    if [ -n "${HARSH_RLWRAP:-}" ]; then
+      printf '%sType a message and press Enter. ↑/↓ history, /help for commands, /quit to exit.%s\n' "${C_DIM}" "${C_RST}" >&2
+    else
+      printf '%sType a message and press Enter. /help for commands, /quit to exit.%s\n' "${C_DIM}" "${C_RST}" >&2
+      command -v rlwrap >/dev/null 2>&1 || printf '%s(install rlwrap for ↑/↓ history and line editing)%s\n' "${C_DIM}" "${C_RST}" >&2
+    fi
     if [ -z "${HARSH_API_KEY}" ] && [ -z "${HARSH_MOCK:-}" ]; then
       printf '! No API key set — the agent cannot respond. Export ANTHROPIC_API_KEY,\n' >&2
       printf '! or set HARSH_MOCK=1 for an offline mock model.\n' >&2

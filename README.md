@@ -214,7 +214,13 @@ goes. Slash commands: `/tools`, `/skills`, `/SKILL [args]`, `/show`,
 `/session`, `/sessions`, `/resume <ID>`, `/new`, `/help`, `/quit` (or
 Ctrl-D). `/sessions` lists past conversations and `/resume <ID>` switches to
 one. Pass a session name to
-resume: `./harsh.sh repl my-session`. It also works non-interactively:
+resume: `./harsh.sh repl my-session`.
+
+If [`rlwrap`](https://github.com/hanslub42/rlwrap) is installed, the REPL
+transparently runs under it for ↑/↓ history recall, line editing, and Ctrl-R
+search, with history persisted to `$HARSH_LOG_DIR/repl_history`. Without it the
+REPL still works — just without those line-editing niceties. Set
+`HARSH_NO_RLWRAP=1` to opt out. It also works non-interactively:
 
 ```sh
 printf '%s\n' 'list the files' '/quit' | ./harsh.sh repl
