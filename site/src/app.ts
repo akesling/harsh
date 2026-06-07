@@ -9,6 +9,12 @@
 import lunr from "lunr";
 import DATA from "./generated.json";
 import { CopyMode, prefixCommand } from "./copymode";
+import {
+  firstNonBlank, wordStartFwd, wordBack, wordEnd,
+  killToEnd, killToStart, deleteCharFwd, clearLine, killWordBack, killWordFwd, type Edit,
+} from "./lineedit";
+
+const REPO_URL = "https://github.com/akesling/harsh";
 
 const INDEX: { files: any[]; funcs: any[] } = (DATA as any).index;
 const SEARCH_DOCS: any[] = (DATA as any).search;
@@ -195,17 +201,24 @@ function buildTopbar() {
   const segs = CUR.split("/");
   const crumbHtml = segs.map((s, k) => (k === segs.length - 1 ? `<b>${esc(s)}</b>` : esc(s)))
     .join('<span style="opacity:.5"> / </span>');
+  const octocat =
+    `<svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>`;
   bar.innerHTML =
     `<div class="brand"><span class="glyph">&#10095;</span><a href="${ROOT}index.html">harsh</a></div>` +
     `<div class="crumbs">${crumbHtml}</div>` +
     `<div class="spacer"></div>` +
+    `<button class="btn mode-badge" id="input-mode" title="Input keymap — click to toggle vi / emacs"></button>` +
     `<button class="btn" id="toggle-console" title="Toggle terminal (\`)">&#10095;_ <kbd>&#96;</kbd></button>` +
     `<button class="btn" id="open-palette">Jump to&hellip; <kbd>&#8984;K</kbd></button>` +
-    `<button class="btn" id="toggle-theme" title="Toggle theme">&#9681;</button>`;
+    `<button class="btn" id="toggle-theme" title="Toggle theme">&#9681;</button>` +
+    `<a class="iconlink" id="repo-link" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="View on GitHub">${octocat}</a>`;
   body.prepend(bar);
+  modeBadge = document.getElementById("input-mode")!;
+  modeBadge.addEventListener("click", toggleInputMode);
   document.getElementById("toggle-console")!.addEventListener("click", toggleConsole);
   document.getElementById("open-palette")!.addEventListener("click", openPalette);
   document.getElementById("toggle-theme")!.addEventListener("click", toggleTheme);
+  updateBadge();
 }
 
 function toggleTheme() {
@@ -214,17 +227,133 @@ function toggleTheme() {
   try { localStorage.setItem("harsh-theme", next); } catch (e) {}
 }
 
+// ---- input mode (vi / emacs) ----------------------------------------------
+function updateBadge() {
+  if (!modeBadge) return;
+  modeBadge.textContent = inputMode;
+  modeBadge.dataset.mode = inputMode;
+}
+function setInputMode(m: "emacs" | "vi") {
+  inputMode = m; viInsert = true; viPending = "";
+  try { localStorage.setItem("harsh-inputmode", m); } catch (e) {}
+  updateBadge(); updateModeStatus();
+}
+function toggleInputMode() { setInputMode(inputMode === "vi" ? "emacs" : "vi"); conInput && conInput.focus(); }
+
+// vi command mode shows in the status line (unless copy mode / the leader own it)
+function updateModeStatus() {
+  if (!conStatus || (copyMode && copyMode.active) || prefixArmed) return;
+  if (inputMode === "vi" && !viInsert) { conStatus.textContent = "-- NORMAL --  (i insert · hjkl · w/b/e · x · dd · /search via ^a [)"; conStatus.className = "con-status"; }
+  else { conStatus.textContent = ""; conStatus.className = "con-status"; }
+  // a thin caret look for vi-normal
+  if (conInput) conInput.classList.toggle("vi-normal", inputMode === "vi" && !viInsert);
+}
+
+const caret = () => conInput.selectionStart ?? conInput.value.length;
+function setInput(e: Edit) { conInput.value = e.value; conInput.setSelectionRange(e.cur, e.cur); }
+function setCaret(i: number) { conInput.setSelectionRange(i, i); }
+function histPrev() { if (histIdx > 0) { histIdx--; conInput.value = history[histIdx] || ""; setCaret(conInput.value.length); } }
+function histNext() { if (histIdx < history.length) { histIdx++; conInput.value = history[histIdx] || ""; setCaret(conInput.value.length); } }
+
+// emacs readline bindings (Ctrl uses e.key; Alt uses e.code, since macOS remaps
+// Alt+letter). Returns true if it consumed the key. Ctrl+a stays the tmux leader.
+function emacsKeydown(e: KeyboardEvent): boolean {
+  const v = conInput.value, c = caret();
+  if (e.ctrlKey && !e.altKey && !e.metaKey) {
+    switch (e.key) {
+      case "e": setCaret(v.length); break;
+      case "b": setCaret(Math.max(0, c - 1)); break;
+      case "f": setCaret(Math.min(v.length, c + 1)); break;
+      case "k": setInput(killToEnd(v, c)); break;
+      case "u": setInput(killToStart(v, c)); break;
+      case "w": setInput(killWordBack(v, c)); break;
+      case "d": setInput(deleteCharFwd(v, c)); break;
+      case "p": histPrev(); break;
+      case "n": histNext(); break;
+      default: return false;
+    }
+    e.preventDefault(); return true;
+  }
+  if (e.altKey && !e.ctrlKey && !e.metaKey) {
+    switch (e.code) {
+      case "KeyF": setCaret(wordStartFwd(v, c)); break;
+      case "KeyB": setCaret(wordBack(v, c)); break;
+      case "KeyD": setInput(killWordFwd(v, c)); break;
+      case "Backspace": setInput(killWordBack(v, c)); break;
+      default: return false;
+    }
+    e.preventDefault(); return true;
+  }
+  return false;
+}
+
+// vi modal line editing. Insert mode lets typing/Enter/Tab/history fall through;
+// Esc enters normal mode where keys are intercepted.
+function viKeydown(e: KeyboardEvent): boolean {
+  if (e.ctrlKey || e.metaKey || e.altKey) return false; // leave combos to emacs-style/leader
+  const v = conInput.value, c = caret();
+  if (viInsert) {
+    if (e.key === "Escape") { e.preventDefault(); viInsert = false; setCaret(Math.max(0, c - 1)); updateModeStatus(); return true; }
+    return false;
+  }
+  e.preventDefault();
+  // operator pending (d / c) + motion
+  if (viPending) {
+    const op = viPending; viPending = "";
+    let r: Edit | null = null;
+    if (e.key === "w") r = killWordFwd(v, c);
+    else if (e.key === "b") { const s = wordBack(v, c); r = { value: v.slice(0, s) + v.slice(c), cur: s }; }
+    else if (e.key === "$") r = killToEnd(v, c);
+    else if (e.key === op) r = clearLine();           // dd / cc
+    if (r) { setInput(r); if (op === "c") viInsert = true; }
+    updateModeStatus(); return true;
+  }
+  switch (e.key) {
+    case "h": case "ArrowLeft": setCaret(Math.max(0, c - 1)); break;
+    case "l": case "ArrowRight": case " ": setCaret(Math.min(Math.max(0, v.length - 1), c + 1)); break;
+    case "0": setCaret(0); break;
+    case "$": setCaret(Math.max(0, v.length - 1)); break;
+    case "^": setCaret(firstNonBlank(v)); break;
+    case "w": setCaret(wordStartFwd(v, c)); break;
+    case "b": setCaret(wordBack(v, c)); break;
+    case "e": setCaret(wordEnd(v, c)); break;
+    case "x": { const r = deleteCharFwd(v, c); setInput({ value: r.value, cur: Math.min(r.cur, Math.max(0, r.value.length - 1)) }); break; }
+    case "D": setInput(killToEnd(v, c)); break;
+    case "C": setInput(killToEnd(v, c)); viInsert = true; break;
+    case "d": viPending = "d"; break;
+    case "c": viPending = "c"; break;
+    case "i": viInsert = true; break;
+    case "a": setCaret(Math.min(v.length, c + 1)); viInsert = true; break;
+    case "A": setCaret(v.length); viInsert = true; break;
+    case "I": setCaret(firstNonBlank(v)); viInsert = true; break;
+    case "k": histPrev(); break;
+    case "j": histNext(); break;
+    case "Enter": { viInsert = true; const val = conInput.value; conInput.value = ""; runCommand(val); break; }
+    default: break;
+  }
+  updateModeStatus(); return true;
+}
+
 // ---- layout ---------------------------------------------------------------
 function buildLayout() {
   const main = document.createElement("div"); main.className = "main";
   const doc = document.createElement("div"); doc.className = "doc";
-  main.appendChild(doc); body.appendChild(main);
+  main.appendChild(doc);
+  const footer = document.createElement("footer");
+  footer.className = "site-footer";
+  footer.innerHTML = `<span>&copy; 2026 <a href="${REPO_URL}" target="_blank" rel="noopener noreferrer">Adjective Noun</a></span>`;
+  main.appendChild(footer);
+  body.appendChild(main);
 }
 
 // ---- pop-down terminal ----------------------------------------------------
 let conEl: HTMLElement, conScroll: HTMLElement, conInput: HTMLInputElement, conPrompt: HTMLElement, conStatus: HTMLElement;
 let copyMode: CopyMode;
 let prefixArmed = false, prefixTimer: any = null;   // tmux Ctrl+a leader
+let inputMode: "emacs" | "vi" = "emacs";            // prompt editing keymap
+let viInsert = true;                                // vi sub-mode (insert vs normal)
+let viPending = "";                                 // vi operator pending (d / c)
+let modeBadge: HTMLElement | null = null;
 let vfs = new Map<string, { dirs: Set<string>; files: Map<string, any> }>();
 let cwd = "";
 let history: string[] = [], histIdx = 0;
@@ -319,9 +448,11 @@ function conText(t: string, cls?: string) { conPut(esc(t), cls); }
 function disarmPrefix() { prefixArmed = false; clearTimeout(prefixTimer); if (!copyMode.active) { conStatus.textContent = ""; conStatus.className = "con-status"; } }
 
 function onConsoleKey(e: KeyboardEvent) {
-  // tmux leader: Ctrl+a, then a command key ([ = copy mode, like tmux).
+  // tmux leader: Ctrl+a, then a command key ([ = copy mode, like tmux). A second
+  // Ctrl+a (^a ^a) sends a literal C-a = beginning of line, the tmux convention.
   if (prefixArmed) {
     e.preventDefault(); disarmPrefix();
+    if (e.ctrlKey && e.key.toLowerCase() === "a") { setCaret(0); return; }
     const act = prefixCommand(e.key);
     if (act === "copy") { openConsole(); copyMode.enter(); }
     else if (act === "help") { cmdHelp(); }
@@ -330,16 +461,19 @@ function onConsoleKey(e: KeyboardEvent) {
   if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "a") {
     e.preventDefault();
     prefixArmed = true;
-    conStatus.textContent = "^a —  [ copy/select mode · ? help";
+    conStatus.textContent = "^a —  [ copy/select mode · ^a beginning of line · ? help";
     conStatus.className = "con-status";
     clearTimeout(prefixTimer);
     prefixTimer = setTimeout(disarmPrefix, 2500);
     return;
   }
 
+  // mode-specific line editing
+  if (inputMode === "vi" ? viKeydown(e) : emacsKeydown(e)) return;
+
   if (e.key === "Enter") { const v = conInput.value; conInput.value = ""; runCommand(v); }
-  else if (e.key === "ArrowUp") { e.preventDefault(); if (histIdx > 0) { histIdx--; conInput.value = history[histIdx] || ""; } }
-  else if (e.key === "ArrowDown") { e.preventDefault(); if (histIdx < history.length) { histIdx++; conInput.value = history[histIdx] || ""; } }
+  else if (e.key === "ArrowUp") { e.preventDefault(); histPrev(); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); histNext(); }
   else if (e.key === "Tab") { e.preventDefault(); tabComplete(); }
   else if (e.key === "Escape") { e.preventDefault(); openConsole(); copyMode.enter(); }
 }
@@ -405,6 +539,10 @@ function cmdHelp() {
     "<b>^a [</b> (tmux leader) or <b>Esc</b> enters copy mode — a tmux/vi keyboard layer:",
     "  motions <b>h j k l</b> · <b>w b e</b> · <b>0 ^ $</b> · <b>gg G</b> · <b>^d ^u ^f ^b</b> · <b>H M L</b> (with counts)",
     "  <b>/</b> <b>?</b> search · <b>n N</b> repeat · <b>v</b>/<b>V</b> select · <b>y</b>/<b>⏎</b> yank to clipboard · <b>q</b> leave",
+    "",
+    "prompt keymap (badge, top right — click to toggle):",
+    "  <b>emacs</b>: ^e ^b ^f ^k ^u ^w ^d · M-f/b/d · ^p/^n history · ^a leader (^a^a = line start)",
+    "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e · x D C · dd dw · i a A I · k/j history",
     "",
     "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> toggles · <b>⌘K</b> jump palette",
   ].join("\n"));
@@ -667,6 +805,7 @@ function boot() {
   CUR = body.dataset.path || "";
   KIND = body.dataset.kind || "code";
   try { const t = localStorage.getItem("harsh-theme"); if (t) body.dataset.theme = t; } catch (e) {}
+  try { const m = localStorage.getItem("harsh-inputmode"); if (m === "vi" || m === "emacs") inputMode = m; } catch (e) {}
   document.addEventListener("keydown", (e) => {
     if (copyMode && copyMode.active) return; // copy mode owns the keyboard
     const inInput = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
