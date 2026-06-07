@@ -6,6 +6,7 @@ import {
 
 test("tmux prefix (Ctrl+a) command table", () => {
   expect(prefixCommand("[")).toBe("copy");   // ^a [ -> copy/select mode
+  expect(prefixCommand("]")).toBe("paste");  // ^a ] -> paste buffer
   expect(prefixCommand("?")).toBe("help");
   expect(prefixCommand("x")).toBeNull();
   expect(prefixCommand("Escape")).toBeNull();

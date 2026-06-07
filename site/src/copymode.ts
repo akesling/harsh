@@ -17,10 +17,11 @@ export type Pos = { r: number; c: number };
 
 // tmux prefix (Ctrl+a) command table: maps the key pressed after the prefix to
 // an action, or null if it isn't bound. `[` enters copy mode, like tmux.
-export type PrefixAction = "copy" | "help";
+export type PrefixAction = "copy" | "paste" | "help";
 export function prefixCommand(key: string): PrefixAction | null {
   switch (key) {
     case "[": return "copy";
+    case "]": return "paste";   // tmux: paste the buffer
     case "?": return "help";
     default: return null;
   }

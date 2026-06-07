@@ -52,3 +52,10 @@ export function killWordFwd(v: string, c: number): Edit {    // M-d / dw
   const e = wordStartFwd(v, c);
   return { value: v.slice(0, c) + v.slice(e), cur: c };
 }
+
+// Insert `text` at the cursor (emacs C-y) or after it (vi p). Cursor lands just
+// past the inserted text; callers can step back one for vi's on-last-char rule.
+export function pasteAt(v: string, c: number, text: string, after = false): Edit {
+  const at = after ? Math.min(v.length, c + 1) : c;
+  return { value: v.slice(0, at) + text + v.slice(at), cur: at + text.length };
+}
