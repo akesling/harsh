@@ -64,6 +64,8 @@ load_config() {
   fi
   : "${HARSH_MODEL:=claude-opus-4-8}"
   : "${HARSH_MAX_TOKENS:=4096}"
+  # Prompt caching on by default — see build_request. Set 0 to disable.
+  : "${HARSH_CACHE:=1}"
   : "${HARSH_API_URL:=https://api.anthropic.com/v1/messages}"
   : "${HARSH_API_VERSION:=2023-06-01}"
   # Data directories must be set explicitly (config or env) — never inferred.
@@ -84,7 +86,7 @@ load_config() {
   # config. HARSH_CONFIG is pinned to the loaded file so children don't re-discover.
   HARSH_SELF="${SELF_DIR}/harsh.sh"
   HARSH_CONFIG=${_config_file}
-  export HARSH_MODEL HARSH_MAX_TOKENS HARSH_API_URL HARSH_API_VERSION \
+  export HARSH_MODEL HARSH_MAX_TOKENS HARSH_CACHE HARSH_API_URL HARSH_API_VERSION \
          HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR \
          HARSH_HOOKS_DIR HARSH_COMMANDS_DIR HARSH_LIB_DIR \
          HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY \
@@ -299,6 +301,34 @@ mock_api() {
   esac
 }
 
+# Build the Messages-API request body from assembled messages + tool schemas.
+# With HARSH_CACHE on (default), inserts cache_control breakpoints so the model
+# bills the repeated prefix at the cache-read rate (~0.1x) on later turns
+# instead of full price every call. Render order is tools->system->messages, so
+# one breakpoint on the system block covers tools+system (the large stable
+# prefix); a second on the final message caches the conversation so far. Without
+# this, an N-step agentic turn re-sends and re-bills the whole prefix N times.
+# Keep the jq body in sync with commands/request.sh.
+build_request() {
+  _bmsgs=$1; _btools=$2
+  _bcache=true; case "${HARSH_CACHE:-1}" in 0|no|off|'') _bcache=false ;; esac
+  jq -n --arg model "${HARSH_MODEL}" --argjson max "${HARSH_MAX_TOKENS}" \
+        --arg sys "${HARSH_SYSTEM_PROMPT}" --argjson tools "${_btools}" \
+        --argjson msgs "${_bmsgs}" --argjson cache "${_bcache}" '
+    def bp: {cache_control:{type:"ephemeral"}};
+    {
+      model: $model,
+      max_tokens: $max,
+      system: (if $cache then [{type:"text", text:$sys} + bp] else $sys end),
+      tools: $tools,
+      messages: (if ($cache and ($msgs|length>0)
+                     and (($msgs[-1].content|type)=="array")
+                     and (($msgs[-1].content|length)>0))
+                 then ($msgs | .[-1].content[-1] += bp)
+                 else $msgs end)
+    }'
+}
+
 # One model turn. Appends assistant blocks; if the model asked for tools, runs
 # them and appends tool_result blocks.
 # returns: 0 = finished, 2 = tool_use (caller should continue), 1 = error.
@@ -307,9 +337,7 @@ cmd_step() {
   [ -d "${_dir}" ] || die "no such session: ${_dir}"
   _msgs=$(cmd_assemble "$1")
   _tools=$(sh "${HARSH_TOOLS_DIR}/tool.sh" schemas 2>/dev/null); [ -n "${_tools}" ] || _tools='[]'
-  _req=$(jq -n --arg model "${HARSH_MODEL}" --argjson max "${HARSH_MAX_TOKENS}" \
-        --arg sys "${HARSH_SYSTEM_PROMPT}" --argjson tools "${_tools}" --argjson msgs "${_msgs}" \
-        '{model:$model, max_tokens:$max, system:$sys, tools:$tools, messages:$msgs}')
+  _req=$(build_request "${_msgs}" "${_tools}")
   _resp=$(call_api "${_req}" "${_dir}") || return 1
 
   if [ "$(printf '%s' "${_resp}" | jq -r 'has("content")')" != "true" ]; then
@@ -551,6 +579,7 @@ EOF
 Environment / config (see harsh.conf):
   HARSH_API_KEY / ANTHROPIC_API_KEY, HARSH_MODEL, HARSH_MAX_TOKENS,
   HARSH_SYSTEM_PROMPT, HARSH_MAX_TURNS, HARSH_MOCK (offline test mode),
+  HARSH_CACHE (prompt caching, on by default; 0 to disable),
   HARSH_VERBOSE (print full tool output instead of a collapsed summary).
   Directories (set in harsh.conf, absolute): HARSH_TOOLS_DIR, HARSH_SKILLS_DIR,
   HARSH_HOOKS_DIR, HARSH_COMMANDS_DIR, HARSH_SESSIONS_DIR, HARSH_LOG_DIR.

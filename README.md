@@ -259,7 +259,17 @@ Run `./harsh.sh help` for the full list. Highlights:
 | `skill SESSION NAME [ARGS]` | Load and run a skill |
 | `final SESSION` | Print the last assistant message (sub-agent result) |
 | `assemble` / `request` / `manifest` / `show` | Inspect state |
+| `usage SESSION` | Token usage + cache hit rate + approx cost |
 | `tools` / `schemas` / `skills` | Discover capabilities |
+
+### Prompt caching
+
+Requests carry `cache_control` breakpoints by default, so the stable prefix
+(tool schemas + system prompt) and the conversation-so-far bill at Anthropic's
+cache-read rate (~0.1×) on later turns instead of full price on every call —
+a large saving in tool-using/agentic loops, where one turn is several API
+round-trips that each re-send the prefix. Set `HARSH_CACHE=0` to disable, and
+run `harsh.sh usage SESSION` to see the hit rate and what it saved.
 
 ## Tests & quality gates
 

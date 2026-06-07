@@ -30,7 +30,7 @@ test_agent_depth_guard_refuses_deep_recursion() {
 }
 
 test_agent_errors_without_harsh_self() {
-  printf '{"task":"x"}' | sh "${ROOT}/tools/tool.sh" call agent >/dev/null 2>&1; _rc=$?
+  printf '{"task":"x"}' | env -u HARSH_SELF sh "${ROOT}/tools/tool.sh" call agent >/dev/null 2>&1; _rc=$?
   assert_ne "${_rc}" 0 'no HARSH_SELF should error'
 }
 
