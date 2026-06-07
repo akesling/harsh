@@ -8,6 +8,7 @@
 // navigation, full-text search, a ⌘K palette, and Markdown rendering.
 import lunr from "lunr";
 import DATA from "./generated.json";
+import { CopyMode } from "./copymode";
 
 const INDEX: { files: any[]; funcs: any[] } = (DATA as any).index;
 const SEARCH_DOCS: any[] = (DATA as any).search;
@@ -221,10 +222,26 @@ function buildLayout() {
 }
 
 // ---- pop-down terminal ----------------------------------------------------
-let conEl: HTMLElement, conScroll: HTMLElement, conInput: HTMLInputElement, conPrompt: HTMLElement;
+let conEl: HTMLElement, conScroll: HTMLElement, conInput: HTMLInputElement, conPrompt: HTMLElement, conStatus: HTMLElement;
+let copyMode: CopyMode;
 let vfs = new Map<string, { dirs: Set<string>; files: Map<string, any> }>();
 let cwd = "";
 let history: string[] = [], histIdx = 0;
+
+// Clipboard write that also works on file:// / non-secure contexts (where the
+// async Clipboard API is unavailable) via a temporary textarea + execCommand.
+function copyText(s: string) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(s); return; }
+  } catch (e) { /* fall through */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = s; ta.style.position = "fixed"; ta.style.top = "-1000px"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  } catch (e) { /* give up quietly */ }
+}
 
 function buildConsole(idx: { files: any[] }) {
   vfs = buildVFS(idx.files || []);
@@ -239,12 +256,21 @@ function buildConsole(idx: { files: any[] }) {
       `<input class="con-input" id="con-input" spellcheck="false" autocomplete="off" ` +
         `autocapitalize="off" autocorrect="off" placeholder="ls · cd tools · open harsh.sh · grep hook · help">` +
       `<button class="con-toggle" id="con-toggle" title="Toggle terminal (\`)">&#9662;</button>` +
-    `</div>`;
+    `</div>` +
+    `<div class="con-status" id="con-status"></div>`;
   document.querySelector(".topbar")!.insertAdjacentElement("afterend", conEl);
   conScroll = conEl.querySelector("#con-scroll")!;
   conInput = conEl.querySelector("#con-input")!;
   conPrompt = conEl.querySelector("#con-prompt")!;
+  conStatus = conEl.querySelector("#con-status")!;
   updatePrompt();
+
+  copyMode = new CopyMode({
+    scroll: conScroll, status: conStatus,
+    onEnter: () => conInput.blur(),
+    onExit: () => conInput.focus(),
+    copyText,
+  });
 
   conEl.querySelector("#con-toggle")!.addEventListener("click", toggleConsole);
   conPrompt.addEventListener("click", () => { openConsole(); conInput.focus(); });
@@ -256,7 +282,7 @@ function buildConsole(idx: { files: any[] }) {
     const d = (e.target as HTMLElement).closest("[data-cd]");
     if (d) { e.preventDefault(); conInput.value = ""; runCommand("cd " + d.getAttribute("data-cd")); runCommand("ls"); }
   });
-  conPut(`<span class="con-dim">harsh source tour. Type <b>help</b>, or <b>ls</b> to look around. Backtick (\`) toggles this terminal.</span>`);
+  conPut(`<span class="con-dim">harsh source tour. Type <b>help</b>, or <b>ls</b> to look around. <b>Esc</b> = vi copy mode · <b>\`</b> toggles.</span>`);
 }
 
 function buildVFS(files: any[]) {
@@ -294,7 +320,7 @@ function onConsoleKey(e: KeyboardEvent) {
   else if (e.key === "ArrowUp") { e.preventDefault(); if (histIdx > 0) { histIdx--; conInput.value = history[histIdx] || ""; } }
   else if (e.key === "ArrowDown") { e.preventDefault(); if (histIdx < history.length) { histIdx++; conInput.value = history[histIdx] || ""; } }
   else if (e.key === "Tab") { e.preventDefault(); tabComplete(); }
-  else if (e.key === "Escape") { closeConsole(); }
+  else if (e.key === "Escape") { e.preventDefault(); openConsole(); copyMode.enter(); }
 }
 
 function tabComplete() {
@@ -354,6 +380,10 @@ function cmdHelp() {
     "  <b>tree</b>            print the whole project tree",
     "  <b>grep</b> &lt;text&gt;     full-text search across every file",
     "  <b>clear</b>           clear the scrollback",
+    "",
+    "<b>Esc</b> enters copy mode — a tmux/vi keyboard layer over the scrollback:",
+    "  motions <b>h j k l</b> · <b>w b e</b> · <b>0 ^ $</b> · <b>gg G</b> · <b>^d ^u ^f ^b</b> · <b>H M L</b> (with counts)",
+    "  <b>/</b> <b>?</b> search · <b>n N</b> repeat · <b>v</b>/<b>V</b> select · <b>y</b>/<b>⏎</b> yank to clipboard · <b>q</b> leave",
     "",
     "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> toggles · <b>⌘K</b> jump palette",
   ].join("\n"));
@@ -457,8 +487,12 @@ function cmdGrep(q: string) {
 }
 
 function openConsole() { conEl.classList.add("open"); }
-function closeConsole() { conEl.classList.remove("open"); }
-function toggleConsole() { conEl.classList.toggle("open"); if (conEl.classList.contains("open")) conInput.focus(); }
+function closeConsole() { if (copyMode && copyMode.active) copyMode.exit(); conEl.classList.remove("open"); }
+function toggleConsole() {
+  if (copyMode && copyMode.active) copyMode.exit();
+  conEl.classList.toggle("open");
+  if (conEl.classList.contains("open")) conInput.focus();
+}
 function scrollBottom() { conScroll.scrollTop = conScroll.scrollHeight; }
 
 // ---- markdown -------------------------------------------------------------
@@ -613,6 +647,7 @@ function boot() {
   KIND = body.dataset.kind || "code";
   try { const t = localStorage.getItem("harsh-theme"); if (t) body.dataset.theme = t; } catch (e) {}
   document.addEventListener("keydown", (e) => {
+    if (copyMode && copyMode.active) return; // copy mode owns the keyboard
     const inInput = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
     else if (e.key === "`" && !inInput) { e.preventDefault(); toggleConsole(); }
