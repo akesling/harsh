@@ -8,7 +8,7 @@
 // navigation, full-text search, a ⌘K palette, and Markdown rendering.
 import lunr from "lunr";
 import DATA from "./generated.json";
-import { CopyMode } from "./copymode";
+import { CopyMode, prefixCommand } from "./copymode";
 
 const INDEX: { files: any[]; funcs: any[] } = (DATA as any).index;
 const SEARCH_DOCS: any[] = (DATA as any).search;
@@ -224,6 +224,7 @@ function buildLayout() {
 // ---- pop-down terminal ----------------------------------------------------
 let conEl: HTMLElement, conScroll: HTMLElement, conInput: HTMLInputElement, conPrompt: HTMLElement, conStatus: HTMLElement;
 let copyMode: CopyMode;
+let prefixArmed = false, prefixTimer: any = null;   // tmux Ctrl+a leader
 let vfs = new Map<string, { dirs: Set<string>; files: Map<string, any> }>();
 let cwd = "";
 let history: string[] = [], histIdx = 0;
@@ -282,7 +283,7 @@ function buildConsole(idx: { files: any[] }) {
     const d = (e.target as HTMLElement).closest("[data-cd]");
     if (d) { e.preventDefault(); conInput.value = ""; runCommand("cd " + d.getAttribute("data-cd")); runCommand("ls"); }
   });
-  conPut(`<span class="con-dim">harsh source tour. Type <b>help</b>, or <b>ls</b> to look around. <b>Esc</b> = vi copy mode · <b>\`</b> toggles.</span>`);
+  conPut(`<span class="con-dim">harsh source tour. Type <b>help</b>, or <b>ls</b> to look around. <b>^a [</b> (or <b>Esc</b>) = vi copy mode · <b>\`</b> toggles.</span>`);
 }
 
 function buildVFS(files: any[]) {
@@ -315,7 +316,27 @@ function fileAt(p: string) {
 function conPut(html: string, cls?: string) { const d = document.createElement("div"); d.className = "con-out" + (cls ? " " + cls : ""); d.innerHTML = html; conScroll.appendChild(d); }
 function conText(t: string, cls?: string) { conPut(esc(t), cls); }
 
+function disarmPrefix() { prefixArmed = false; clearTimeout(prefixTimer); if (!copyMode.active) { conStatus.textContent = ""; conStatus.className = "con-status"; } }
+
 function onConsoleKey(e: KeyboardEvent) {
+  // tmux leader: Ctrl+a, then a command key ([ = copy mode, like tmux).
+  if (prefixArmed) {
+    e.preventDefault(); disarmPrefix();
+    const act = prefixCommand(e.key);
+    if (act === "copy") { openConsole(); copyMode.enter(); }
+    else if (act === "help") { cmdHelp(); }
+    return; // the key after the leader is consumed either way
+  }
+  if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "a") {
+    e.preventDefault();
+    prefixArmed = true;
+    conStatus.textContent = "^a —  [ copy/select mode · ? help";
+    conStatus.className = "con-status";
+    clearTimeout(prefixTimer);
+    prefixTimer = setTimeout(disarmPrefix, 2500);
+    return;
+  }
+
   if (e.key === "Enter") { const v = conInput.value; conInput.value = ""; runCommand(v); }
   else if (e.key === "ArrowUp") { e.preventDefault(); if (histIdx > 0) { histIdx--; conInput.value = history[histIdx] || ""; } }
   else if (e.key === "ArrowDown") { e.preventDefault(); if (histIdx < history.length) { histIdx++; conInput.value = history[histIdx] || ""; } }
@@ -381,7 +402,7 @@ function cmdHelp() {
     "  <b>grep</b> &lt;text&gt;     full-text search across every file",
     "  <b>clear</b>           clear the scrollback",
     "",
-    "<b>Esc</b> enters copy mode — a tmux/vi keyboard layer over the scrollback:",
+    "<b>^a [</b> (tmux leader) or <b>Esc</b> enters copy mode — a tmux/vi keyboard layer:",
     "  motions <b>h j k l</b> · <b>w b e</b> · <b>0 ^ $</b> · <b>gg G</b> · <b>^d ^u ^f ^b</b> · <b>H M L</b> (with counts)",
     "  <b>/</b> <b>?</b> search · <b>n N</b> repeat · <b>v</b>/<b>V</b> select · <b>y</b>/<b>⏎</b> yank to clipboard · <b>q</b> leave",
     "",
