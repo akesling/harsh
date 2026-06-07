@@ -210,11 +210,23 @@ async function runBuild() {
 // ---------------------------------------------------------------------------
 // dev server: serve dist/, watch the repo, rebuild + live-reload on change
 // ---------------------------------------------------------------------------
+
+// Bind starting at `start`, walking forward over busy ports, so several dev
+// sites can run at once; fall back to an OS-assigned port (0) if all are busy.
+// `make` is the bind (Bun.serve); injected so this is unit-testable without a
+// real socket. Only EADDRINUSE is retried — other errors propagate.
+export function listenWithFallback<T>(start: number, make: (port: number) => T, span = 50): T {
+  for (let p = start; p < start + span; p++) {
+    try { return make(p); }
+    catch (e: any) { if (!e || e.code !== "EADDRINUSE") throw e; }
+  }
+  return make(0);
+}
+
 function startDevServer() {
   const clients = new Set<any>();
-  const server = Bun.serve({
-    port: PORT,
-    async fetch(req, srv) {
+  const handlers = {
+    async fetch(req: Request, srv: any) {
       const url = new URL(req.url);
       if (url.pathname === "/__livereload") { if (srv.upgrade(req)) return; }
       let p = decodeURIComponent(url.pathname);
@@ -222,8 +234,11 @@ function startDevServer() {
       const file = Bun.file(path.join(DIST, p));
       return (await file.exists()) ? new Response(file) : new Response("not found", { status: 404 });
     },
-    websocket: { message() {}, open(ws) { clients.add(ws); }, close(ws) { clients.delete(ws); } },
-  });
+    websocket: { message() {}, open(ws: any) { clients.add(ws); }, close(ws: any) { clients.delete(ws); } },
+  };
+
+  // Claim a free port so several dev sites can run at once.
+  const server = listenWithFallback(PORT, (p) => Bun.serve({ port: p, ...handlers }));
 
   let timer: any = null, building = false;
   // Ignore generated/runtime paths — crucially src/generated.json and dist/,
@@ -241,8 +256,13 @@ function startDevServer() {
     }, 120);
   });
 
-  console.log(`build.ts: serving http://localhost:${server.port}/  (watching for changes — Ctrl-C to stop)`);
+  const moved = server.port !== PORT ? `  (port ${PORT} busy → ${server.port})` : "";
+  console.log(`build.ts: serving http://localhost:${server.port}/${moved}  (watching for changes — Ctrl-C to stop)`);
 }
 
-await runBuild();
-if (DEV) startDevServer();
+// Only run when invoked directly (`bun run build.ts`), so tests can import the
+// helpers above without triggering a build.
+if (import.meta.main) {
+  await runBuild();
+  if (DEV) startDevServer();
+}
