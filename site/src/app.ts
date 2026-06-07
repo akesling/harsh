@@ -334,6 +334,30 @@ function viKeydown(e: KeyboardEvent): boolean {
   updateModeStatus(); return true;
 }
 
+// vim-style movement on the document (vi mode, when not typing in the terminal):
+// j/k scroll a few lines, ^d/^u half a page, gg/G jump to top/bottom.
+let pageGPending = false;
+function pageNavKey(e: KeyboardEvent): boolean {
+  const step = 80, half = Math.floor((window.innerHeight || 800) / 2);
+  const max = (document.documentElement.scrollHeight || document.body.scrollHeight) + 1000;
+  if (e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.key === "d") { window.scrollBy(0, half); return true; }
+    if (e.key === "u") { window.scrollBy(0, -half); return true; }
+    return false;
+  }
+  if (e.metaKey || e.altKey) return false;
+  if (pageGPending) { pageGPending = false; if (e.key === "g") { window.scrollTo({ top: 0, behavior: "smooth" }); return true; } }
+  switch (e.key) {
+    case "j": window.scrollBy(0, step); return true;
+    case "k": window.scrollBy(0, -step); return true;
+    case "d": window.scrollBy(0, half); return true;   // also bare d/u for convenience
+    case "u": window.scrollBy(0, -half); return true;
+    case "g": pageGPending = true; return true;
+    case "G": window.scrollTo({ top: max, behavior: "smooth" }); return true;
+    default: return false;
+  }
+}
+
 // ---- layout ---------------------------------------------------------------
 function buildLayout() {
   const main = document.createElement("div"); main.className = "main";
@@ -543,6 +567,7 @@ function cmdHelp() {
     "prompt keymap (badge, top right — click to toggle):",
     "  <b>emacs</b>: ^e ^b ^f ^k ^u ^w ^d · M-f/b/d · ^p/^n history · ^a leader (^a^a = line start)",
     "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e · x D C · dd dw · i a A I · k/j history",
+    "  <b>vi page</b> (when not typing): <b>j/k</b> scroll · <b>^d/^u</b> half-page · <b>gg/G</b> top/bottom",
     "",
     "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> toggles · <b>⌘K</b> jump palette",
   ].join("\n"));
@@ -812,6 +837,8 @@ function boot() {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
     else if (e.key === "`" && !inInput) { e.preventDefault(); toggleConsole(); }
     else if (e.key === "/" && !inInput) { e.preventDefault(); openPalette(); }
+    // vi mode: vim-style page movement when not typing in the terminal.
+    else if (inputMode === "vi" && !inInput && pageNavKey(e)) { e.preventDefault(); }
   });
   init();
 }
