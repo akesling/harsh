@@ -346,14 +346,14 @@ function pageNavKey(e: KeyboardEvent): boolean {
     return false;
   }
   if (e.metaKey || e.altKey) return false;
-  if (pageGPending) { pageGPending = false; if (e.key === "g") { window.scrollTo({ top: 0, behavior: "smooth" }); return true; } }
+  if (pageGPending) { pageGPending = false; if (e.key === "g") { window.scrollTo(0, 0); return true; } }   // gg — instant jump to top
   switch (e.key) {
     case "j": window.scrollBy(0, step); return true;
     case "k": window.scrollBy(0, -step); return true;
     case "d": window.scrollBy(0, half); return true;   // also bare d/u for convenience
     case "u": window.scrollBy(0, -half); return true;
     case "g": pageGPending = true; return true;
-    case "G": window.scrollTo({ top: max, behavior: "smooth" }); return true;
+    case "G": window.scrollTo(0, max); return true;    // instant jump to bottom
     default: return false;
   }
 }
