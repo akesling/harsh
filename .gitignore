@@ -6,3 +6,8 @@ logs/*
 
 local/
 .claude/worktrees
+
+# generated source-tour site (Bun)
+site/dist/
+site/node_modules/
+site/src/generated.json

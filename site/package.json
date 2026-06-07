@@ -1,0 +1,19 @@
+{
+  "name": "harsh-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interactive annotated source tour for harsh — built with Bun.",
+  "type": "module",
+  "scripts": {
+    "build": "bun run build.ts",
+    "dev": "bun run build.ts --dev",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "lunr": "2.3.9"
+  },
+  "devDependencies": {
+    "@types/lunr": "2.3.7",
+    "bun-types": "^1.3.14"
+  }
+}
