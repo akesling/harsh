@@ -124,6 +124,60 @@ render_tool_result() {
   return 0
 }
 
+# render_user TEXT — a user prose block: a colored "you" header and an indented,
+# user-colored body. The mirror of render_assistant for replayed transcripts.
+render_user() {
+  printf '%syou%s\n' "${C_USER}" "${C_RST}"
+  printf '%s' "$1" | body "${C_USER}"
+  printf '\n'
+}
+
+# render_transcript DIR [FROM_SEQ] — replay a whole session as colorized,
+# headered, markdown-highlighted turns: the exact look of the live REPL/TUI, so
+# `harsh show` (and hence /resume) never drift from them. Prose gets a speaker
+# header + clean indent; tool mechanics collapse to one dim line each (expandable
+# via /verbose). FROM_SEQ, if given, anchors the view to entries with SEQ >= it.
+render_transcript() {
+  _dir=$1; _from_seq=${2:-}
+  for _f in "${_dir}"/[0-9]*.json; do
+    [ -e "${_f}" ] || continue
+    _seq=$(basename "${_f}"); _seq=${_seq%%-*}
+    if [ -n "${_from_seq}" ]; then
+      # Numeric compare with leading zeros stripped (POSIX; no base-conversion).
+      _a=${_seq#"${_seq%%[!0]*}"}; _b=${_from_seq#"${_from_seq%%[!0]*}"}
+      [ "${_a:-0}" -ge "${_b:-0}" ] || continue
+    fi
+    _role=$(jq -r '.role' "${_f}")
+    _btype=$(jq -r '.block.type' "${_f}")
+    case "${_role}:${_btype}" in
+      user:text)
+        render_user "$(jq -r '.block.text' "${_f}")"; continue ;;
+      assistant:text)
+        # render_assistant already skips all-whitespace prose blocks.
+        render_assistant "$(jq -r '.block.text' "${_f}")"; continue ;;
+      assistant:tool_use)
+        tool_oneline "$(jq -r '.block.name' "${_f}")" "$(jq -c '.block.input' "${_f}")" ;;
+      *:tool_result)
+        _out=$(jq -r '.block.content | tostring' "${_f}")
+        _iserr=$(jq -r '.block.is_error // false' "${_f}")
+        _lines=$(printf '%s\n' "${_out}" | wc -l | tr -d ' ')
+        if [ "${_iserr}" = true ]; then
+          printf '  %s→ error · #%s%s\n' "${C_TOOL}" "${_seq}" "${C_RST}"
+          printf '%s\n' "${_out}" | head -n 8 | gutter "${C_GUT}" "${C_RES}"
+        else
+          printf '  %s→ %s line%s · #%s%s\n' \
+            "${C_DIM}" "${_lines}" "$( [ "${_lines}" = 1 ] || printf s )" "${_seq}" "${C_RST}"
+          [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "${_out}" | gutter "${C_GUT}" "${C_RES}"
+        fi
+        continue ;;   # keep the result snug under its call line
+      *)
+        printf '%s%s/%s%s\n' "${C_DIM}" "${_role}" "${_btype}" "${C_RST}"
+        jq -r '.block | tojson' "${_f}" | body "${C_GUT}" ;;
+    esac
+    printf '\n'
+  done
+}
+
 # Lightweight, dependency-free markdown highlighter for assistant prose.
 # Operates line-by-line with sed (BRE only, so it stays portable across the
 # BSD/GNU split). Conservative: it styles the common inline/block forms and

@@ -118,70 +118,8 @@ else
   tool_oneline() { printf '%s %s\n' "$1" "$2"; }
 fi
 
-# Strip leading zeros from a numeric string (POSIX-safe). Avoids feeding a
-# zero-padded seq like "0008" straight into $(( )), where leading zeros mean
-# octal and "0008"/"0009" would error.
-dec() { _d=${1#"${1%%[!0]*}"}; printf '%s' "${_d:-0}"; }
-
-# Render the transcript as colorized, prefixed lines. Reuses the same per-entry
-# decoding the core uses, so the TUI never drifts from `harsh show`. An optional
-# second argument anchors the render: only entries with SEQ >= from_seq are
-# drawn, so `/map` can "jump" the view to a chosen prompt.
-render_transcript() {
-  _dir=$1; _from_seq=${2:-}
-  for _f in "${_dir}"/[0-9]*.json; do
-    [ -e "${_f}" ] || continue
-    _seq=$(basename "${_f}"); _seq=${_seq%%-*}
-    if [ -n "${_from_seq}" ]; then
-      # Numeric compare with leading zeros stripped (POSIX; no base-conversion).
-      [ "$(dec "${_seq}")" -ge "$(dec "${_from_seq}")" ] || continue
-    fi
-    _role=$(jq -r '.role' "${_f}")
-    _btype=$(jq -r '.block.type' "${_f}")
-    # Prose is the content you read, so it gets a header + clean indent. Tool
-    # mechanics are skimmable, so they collapse to one dim line each — matching
-    # the REPL (cmd_step in harsh.sh) so the two never drift in look.
-    case "${_role}:${_btype}" in
-      user:text)
-        printf '%syou%s\n' "${C_USER}" "${C_RST}"
-        jq -r '.block.text' "${_f}" | body "${C_USER}" ;;
-      assistant:text)
-        # Skip empty prose blocks that accompany a tool call.
-        _txt=$(jq -r '.block.text' "${_f}")
-        if [ -n "$(printf '%s' "${_txt}" | tr -d '[:space:]')" ]; then
-          printf '%sharsh%s\n' "${C_AI}" "${C_RST}"
-          printf '%s' "${_txt}" | fmt_markdown | body
-        else
-          continue
-        fi ;;
-      assistant:tool_use)
-        _name=$(jq -r '.block.name' "${_f}")
-        _input=$(jq -c '.block.input' "${_f}")
-        tool_oneline "${_name}" "${_input}" ;;
-      *:tool_result)
-        # Append the result's line-count to the preceding call line, tagged with
-        # its #seq handle. On error (or under HARSH_VERBOSE) show the output; on
-        # success a single glance ("→ N lines · #SEQ") suffices.
-        _out=$(jq -r '.block.content | tostring' "${_f}")
-        _iserr=$(jq -r '.block.is_error // false' "${_f}")
-        _lines=$(printf '%s\n' "${_out}" | wc -l | tr -d ' ')
-        if [ "${_iserr}" = true ]; then
-          printf '  %s→ error · #%s%s\n' "${C_TOOL}" "${_seq}" "${C_RST}"
-          printf '%s\n' "${_out}" | head -n 8 | gutter "${C_GUT}" "${C_RES}"
-        else
-          printf '  %s→ %s line%s · #%s%s\n' \
-            "${C_DIM}" "${_lines}" "$( [ "${_lines}" = 1 ] || printf s )" "${_seq}" "${C_RST}"
-          [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "${_out}" | gutter "${C_GUT}" "${C_RES}"
-        fi
-        # No trailing blank: keep the result snug under its call line.
-        continue ;;
-      *)
-        printf '%s%s/%s%s\n' "${C_DIM}" "${_role}" "${_btype}" "${C_RST}"
-        jq -r '.block | tojson' "${_f}" | body "${C_GUT}" ;;
-    esac
-    printf '\n'
-  done
-}
+# The transcript renderer (render_transcript DIR [FROM_SEQ]) lives in
+# lib/render.sh, shared with `harsh show`/the REPL so the three never drift.
 
 # Clear the screen and draw the transcript followed by a status bar. The
 # transcript is piped through a pager-free tail so the newest turn is visible;

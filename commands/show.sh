@@ -1,14 +1,10 @@
 #!/usr/bin/env sh
-# show — print a session's transcript in a readable, plain form.
+# show — replay a session's transcript with the same styling as the live REPL
+# (colored speaker headers, markdown prose, collapsed tool lines). Used by
+# /resume so a resumed conversation looks just like an ongoing one.
 set -u
-[ "${1:-}" = --describe ] && { printf 'show SESSION\tPrint a readable transcript.\n'; exit 0; }
+[ "${1:-}" = --describe ] && { printf 'show SESSION\tReplay a session transcript (styled).\n'; exit 0; }
+# shellcheck source=/dev/null
+. "${HARSH_LIB_DIR}/render.sh"
 _dir=$(sh "${HARSH_SELF}" path "$1")
-for _f in "${_dir}"/[0-9]*.json; do
-  [ -e "${_f}" ] || continue
-  jq -r '.role as $r | .block as $b |
-    "[" + $r + "/" + $b.type + "] " +
-    (if $b.type=="text" then $b.text
-     elif $b.type=="tool_use" then ($b.name + " " + ($b.input|tojson))
-     elif $b.type=="tool_result" then ($b.content|tostring)
-     else ($b|tojson) end)' "${_f}"
-done
+render_transcript "${_dir}"

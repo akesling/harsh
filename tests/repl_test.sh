@@ -38,6 +38,19 @@ test_repl_resume_switches_session() {
   assert_contains "${_out}" 'marker-in-target'
 }
 
+test_show_is_styled_not_raw() {
+  # `show` (used by /resume) must replay with speaker headers, not the old
+  # bare "[role/type] text" dump. Force color so the styled path is exercised.
+  _s=$(hnew styled)
+  hsh -q ask "${_s}" 'styled marker' >/dev/null
+  _out=$(HARSH_COLOR=1 hsh show "${_s}")
+  assert_contains "${_out}" 'styled marker'
+  assert_contains "${_out}" 'you'            # speaker header
+  assert_contains "${_out}" 'harsh'          # assistant header
+  assert_not_contains "${_out}" '[user/text]'
+  assert_not_contains "${_out}" '[assistant/text]'
+}
+
 test_repl_resume_unknown_is_reported() {
   _out=$(printf '%s\n' '/resume nope-nonexistent' '/quit' | hsh repl rt 2>&1)
   assert_contains "${_out}" 'no such session'
