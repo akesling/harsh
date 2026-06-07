@@ -64,9 +64,21 @@ Every tool is an executable `tools/NAME.sh` that:
 - prints its schema (an Anthropic tool definition) with `--schema`, and
 - reads a JSON object on stdin and writes a text result to stdout when run.
 
+Stdout (and stderr) become the model-facing `tool_result`, so keep it terse.
+A tool may also write to **fd 3**, a display side-channel the REPL shows the
+user but never sends to the model — use it for rich, human-only output that
+would otherwise waste context (e.g. `edit`'s colored diff). Guard writes with
+`{ : >&3; } 2>/dev/null` so the tool still works when fd 3 isn't open.
+
 `tools/tool.sh` is the dispatcher every call goes through
 (`tool.sh schemas`, `tool.sh call NAME`). Built-in tools: `bash`, `read`,
 `write`, `edit`, `ls`, `grep`, `skills`, and `agent` (sub-agents, below).
+`edit` returns only a terse `edited <path>` to the model, and renders a rich,
+syntax-colored unified diff to the user via a display side-channel (fd 3) that
+the REPL shows but never feeds back into the model's context. The diff uses
+`delta` or `diff-so-fancy` if installed, otherwise a built-in ANSI renderer.
+Knobs: `HARSH_EDIT_DIFF=0` suppresses the diff, `HARSH_EDIT_DIFF_MAX` caps its
+length, and `HARSH_EDIT_DIFF_COLOR=0` (or `NO_COLOR`) disables coloring.
 
 ### Sub-agents
 

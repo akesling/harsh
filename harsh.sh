@@ -392,8 +392,14 @@ cmd_step() {
       # the model as the (error) tool_result, and the tool is not run.
       _prepay=$(jq -nc --arg e PreToolUse --arg s "${_dir}" --arg n "${_name}" --argjson in "${_input}" \
                 '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in}')
+      _disp=   # reset per iteration (the while-read loop reuses variables)
       if _reason=$(run_hooks PreToolUse "${_prepay}" "${_name}"); then
-        _out=$(printf '%s' "${_input}" | sh "${HARSH_TOOLS_DIR}/tool.sh" call "${_name}" 2>&1); _rc=$?
+        # fd 3 is a display side-channel: a tool can write rich, human-only
+        # output there (e.g. edit's colored diff) that we show the user but
+        # never feed back to the model. Captured to a temp file so it stays
+        # separate from stdout (the model-facing tool_result).
+        _disp=$(mktemp 2>/dev/null || echo "/tmp/harsh_disp.$$")
+        _out=$(printf '%s' "${_input}" | sh "${HARSH_TOOLS_DIR}/tool.sh" call "${_name}" 2>&1 3>"${_disp}"); _rc=$?
         _err=true; [ "${_rc}" -eq 0 ] && _err=false
         # PostToolUse — feedback (if any) is appended to the tool output.
         _postpay=$(jq -nc --arg e PostToolUse --arg s "${_dir}" --arg n "${_name}" \
@@ -412,6 +418,14 @@ cmd_step() {
       _rseq=$(next_seq "${_dir}")
       add_entry "${_dir}" user tool_result "${_name}" "${_block}"
       [ -n "${HARSH_QUIET:-}" ] || render_tool_result "${_rseq}" "${_name}" "${_input}" "${_out}" "${_err}"
+      # Show the tool's display side-channel (fd 3) to the user only — it's
+      # never part of the model's context. Indented to sit under the result.
+      if [ -n "${HARSH_QUIET:-}" ]; then
+        :
+      elif [ -n "${_disp:-}" ] && [ -s "${_disp}" ]; then
+        sed 's/^/  /' "${_disp}"
+      fi
+      [ -n "${_disp:-}" ] && rm -f "${_disp}"
     done
     return 2
   fi

@@ -30,6 +30,49 @@ test_edit_literal_special_chars() {
   rm -rf "${_d}"
 }
 
+test_edit_stdout_is_terse_no_diff() {
+  # stdout is the model-facing result — it must stay terse, never the diff.
+  _d=$(mktemp -d); _f="${_d}/x.txt"; printf 'one\ntwo\nthree\n' > "${_f}"
+  _out=$(tool edit "$(jq -nc --arg p "${_f}" '{path:$p,old:"two",new:"TWO"}')")
+  assert_contains "${_out}" 'edited'
+  assert_not_contains "${_out}" '@@'    # the diff must NOT reach the model
+  assert_not_contains "${_out}" '+TWO'
+  rm -rf "${_d}"
+}
+
+test_edit_emits_unified_diff_on_fd3() {
+  # The rich diff goes to fd 3 (the display side-channel), color-disabled here.
+  _d=$(mktemp -d); _f="${_d}/x.txt"; printf 'one\ntwo\nthree\n' > "${_f}"
+  _disp="${_d}/disp"
+  _out=$(NO_COLOR=1 tool edit \
+    "$(jq -nc --arg p "${_f}" '{path:$p,old:"two",new:"TWO"}')" 3>"${_disp}")
+  _diff=$(cat "${_disp}")
+  assert_contains "${_diff}" '@@'        # a hunk header → it's a real diff
+  assert_contains "${_diff}" '-two'
+  assert_contains "${_diff}" '+TWO'
+  assert_not_contains "${_diff}" '-one'  # unchanged lines aren't churned
+  rm -rf "${_d}"
+}
+
+test_edit_preserves_trailing_newline() {
+  _d=$(mktemp -d); _f="${_d}/x.txt"; printf 'a\nb\nc\n' > "${_f}"
+  tool edit "$(jq -nc --arg p "${_f}" '{path:$p,old:"b",new:"B"}')" >/dev/null
+  # The file must still end in a newline (a regression the diff made visible).
+  assert_eq "$(tail -c1 "${_f}" | od -An -c | tr -d ' ')" '\n' 'trailing newline kept'
+  rm -rf "${_d}"
+}
+
+test_edit_diff_can_be_disabled() {
+  _d=$(mktemp -d); _f="${_d}/x.txt"; printf 'one\ntwo\n' > "${_f}"
+  _disp="${_d}/disp"
+  _out=$(HARSH_EDIT_DIFF=0 tool edit \
+    "$(jq -nc --arg p "${_f}" '{path:$p,old:"two",new:"TWO"}')" 3>"${_disp}")
+  assert_contains "${_out}" 'edited'
+  # With the diff disabled nothing reaches the fd-3 display channel.
+  assert_eq "$(cat "${_disp}")" '' 'fd 3 is empty when HARSH_EDIT_DIFF=0'
+  rm -rf "${_d}"
+}
+
 test_bash_runs_command() {
   assert_contains "$(tool bash '{"command":"echo bashok"}')" 'bashok'
 }
