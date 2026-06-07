@@ -113,10 +113,13 @@ next_seq() {
   printf '%04d' $((_n + 1))
 }
 
-# Append a conversation entry: one file holding {role, block} plus a manifest line.
-#   add_entry DIR ROLE TYPE NAME BLOCK_JSON
+# Append a conversation entry: one file holding {role, block[, meta]} plus a
+# manifest line. The optional META_JSON carries per-turn response metadata
+# (usage, stop_reason, model, id, …) — it is preserved in the session record but
+# deliberately ignored by cmd_assemble, so it never reaches the API request.
+#   add_entry DIR ROLE TYPE NAME BLOCK_JSON [META_JSON]
 add_entry() {
-  _dir=$1; _role=$2; _type=$3; _name=$4; _block=$5
+  _dir=$1; _role=$2; _type=$3; _name=$4; _block=$5; _meta=${6:-}
   _seq=$(next_seq "${_dir}")
   if [ -n "${_name}" ]; then
     _safe=$(printf '%s' "${_name}" | tr -c 'A-Za-z0-9_.-' '_')
@@ -124,8 +127,14 @@ add_entry() {
   else
     _file="${_seq}-${_role}-${_type}.json"
   fi
-  jq -nc --arg role "${_role}" --argjson block "${_block}" '{role:$role,block:$block}' \
-    > "${_dir}/${_file}" || die "failed to write entry (invalid block json)"
+  if [ -n "${_meta}" ] && [ "${_meta}" != null ] && [ "${_meta}" != '{}' ]; then
+    jq -nc --arg role "${_role}" --argjson block "${_block}" --argjson meta "${_meta}" \
+      '{role:$role, block:$block, meta:$meta}' \
+      > "${_dir}/${_file}" || die "failed to write entry (invalid block/meta json)"
+  else
+    jq -nc --arg role "${_role}" --argjson block "${_block}" '{role:$role,block:$block}' \
+      > "${_dir}/${_file}" || die "failed to write entry (invalid block json)"
+  fi
   _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '%s,%s,%s,%s,%s,%s,%s\n' "${_seq}" "${_role}" "${_type}" "${_name}" "${_file}" "${_ts}" "ok" \
     >> "${_dir}/manifest.csv"
@@ -297,7 +306,9 @@ mock_api() {
            input:{command:$a,path:$a,pattern:$a,name:$a}}],
         stop_reason:"tool_use"}' ;;
     *)
-      jq -n --arg t "[mock] You said: ${_last}" '{content:[{type:"text",text:$t}],stop_reason:"end_turn"}' ;;
+      jq -n --arg t "[mock] You said: ${_last}" '{content:[{type:"text",text:$t}],stop_reason:"end_turn",
+        model:"mock-model", id:"msg_mock1", role:"assistant", type:"message",
+        usage:{input_tokens:10, output_tokens:5, cache_read_input_tokens:0, cache_creation_input_tokens:0}}' ;;
   esac
 }
 
@@ -346,13 +357,23 @@ cmd_step() {
     return 1
   fi
 
+  # Per-turn response metadata (everything the API returned except the content
+  # blocks themselves): usage/token counts, stop_reason, model, id, etc. We
+  # attach it to this turn's first assistant block so it's preserved in the
+  # session record; cmd_assemble drops it when building the API request.
+  _meta=$(printf '%s' "${_resp}" | jq -c 'del(.content, .role, .type)')
+
   _n=$(printf '%s' "${_resp}" | jq '.content | length')
   _i=0
   while [ "${_i}" -lt "${_n}" ]; do
     _block=$(printf '%s' "${_resp}" | jq -c ".content[${_i}]")
     _btype=$(printf '%s' "${_block}" | jq -r '.type')
     _bname=$(printf '%s' "${_block}" | jq -r '.name // ""')
-    add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}"
+    if [ "${_i}" -eq 0 ]; then
+      add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}" "${_meta}"
+    else
+      add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}"
+    fi
     # Tool calls render with their result in the loop below; here, just prose.
     case "${_btype}" in
       text) [ -n "${HARSH_QUIET:-}" ] || render_assistant "$(printf '%s' "${_block}" | jq -r '.text')" ;;

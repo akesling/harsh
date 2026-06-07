@@ -31,6 +31,34 @@ test_assemble_empty_session_is_empty_array() {
   assert_eq "$(hsh assemble "$(hnew)")" '[]'
 }
 
+test_response_metadata_preserved_in_session() {
+  # The API's per-turn metadata (usage, stop_reason, model, id) is kept in the
+  # session entry under .meta, attached to the turn's first assistant block.
+  _s=$(hnew metasess)
+  hsh -q ask "${_s}" 'hello there' >/dev/null
+  _dir=$(hsh path "${_s}")
+  _meta=$(jq -c '.meta' "${_dir}"/*assistant-text.json)
+  assert_eq "$(printf '%s' "${_meta}" | jq -r '.stop_reason')" 'end_turn'
+  assert_eq "$(printf '%s' "${_meta}" | jq -r '.model')" 'mock-model'
+  assert_eq "$(printf '%s' "${_meta}" | jq -r '.usage.input_tokens')" '10'
+  # content blocks (role/type/content) must NOT bleed into meta.
+  assert_eq "$(printf '%s' "${_meta}" | jq 'has("content")')" 'false' 'meta excludes content'
+}
+
+test_metadata_is_filtered_from_api_request() {
+  # Whatever we store, the assembled request must carry only role+content —
+  # no .meta anywhere, or the API would reject it.
+  _s=$(hnew metafilter)
+  hsh -q ask "${_s}" 'hello there' >/dev/null
+  assert_eq "$(hsh assemble "${_s}" | jq '[.. | objects | select(has("meta"))] | length')" '0' \
+            'no meta in assembled messages'
+  assert_eq "$(hsh request "${_s}" | jq '[.. | objects | select(has("meta"))] | length')" '0' \
+            'no meta in request body'
+  # entries still carry exactly role+content for every message.
+  assert_eq "$(hsh assemble "${_s}" | jq -r '[.[] | keys | join(".")] | unique | join(",")')" \
+            'content.role' 'messages carry only role+content'
+}
+
 test_manifest_has_columns() {
   _s=$(hnew)
   hsh -q send "${_s}" 'hi'
