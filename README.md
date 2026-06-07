@@ -271,6 +271,9 @@ scripts/quality_gates.sh     # shellcheck + cross-shell parse + schemas + tests
 Every test runs in its own tempdir with a sandbox config, so a run never
 touches the real `sessions/`, `logs/`, or `hooks/`. See `tests/README.md`.
 
+Contributing conventions (deps, portability, shell variable style, the
+quality gate) live in [`STYLE.md`](STYLE.md).
+
 ## Portability notes
 
 Scripts target POSIX `sh` and avoid arrays, `[[ ]]`, and process substitution.

@@ -7,12 +7,12 @@ if [ "${1:-}" = --schema ]; then
 EOF
   exit 0
 fi
-input=$(cat)
-path=$(printf '%s' "$input" | jq -r '.path // empty')
-[ -n "$path" ] || { echo "error: missing 'path'"; exit 1; }
-[ -f "$path" ] || { echo "error: no such file: $path"; exit 1; }
-off=$(printf '%s' "$input" | jq -r '.offset // 1')
-lim=$(printf '%s' "$input" | jq -r '.limit // 0')
-awk -v o="$off" -v l="$lim" '
+_input=$(cat)
+_path=$(printf '%s' "${_input}" | jq -r '.path // empty')
+[ -n "${_path}" ] || { echo "error: missing 'path'"; exit 1; }
+[ -f "${_path}" ] || { echo "error: no such file: ${_path}"; exit 1; }
+_off=$(printf '%s' "${_input}" | jq -r '.offset // 1')
+_lim=$(printf '%s' "${_input}" | jq -r '.limit // 0')
+awk -v o="${_off}" -v l="${_lim}" '
   NR >= o { printf "%6d\t%s\n", NR, $0; n++; if (l > 0 && n >= l) exit }
-' "$path"
+' "${_path}"

@@ -21,43 +21,43 @@ fi
 # Recursion guard: refuse once we hit the depth cap, so sub-agents (which can
 # themselves call this tool) cannot recurse forever. The depth rides along in
 # the environment, inherited by every descendant.
-depth=${HARSH_AGENT_DEPTH:-0}
-max=${HARSH_AGENT_MAX_DEPTH:-3}
-case "$depth" in *[!0-9]*|'') depth=0 ;; esac
-case "$max"   in *[!0-9]*|'') max=3   ;; esac
-if [ "$depth" -ge "$max" ]; then
-  printf 'error: sub-agent depth limit reached (%s); refusing to spawn another.\n' "$max"
+_depth=${HARSH_AGENT_DEPTH:-0}
+_max=${HARSH_AGENT_MAX_DEPTH:-3}
+case "${_depth}" in *[!0-9]*|'') _depth=0 ;; esac
+case "${_max}"   in *[!0-9]*|'') _max=3   ;; esac
+if [ "${_depth}" -ge "${_max}" ]; then
+  printf 'error: sub-agent depth limit reached (%s); refusing to spawn another.\n' "${_max}"
   exit 1
 fi
 
-input=$(cat)
-task=$(printf '%s' "$input" | jq -r '.task // empty')
-[ -n "$task" ] || { echo "error: missing 'task'"; exit 1; }
-label=$(printf '%s' "$input" | jq -r '.label // empty')
-case "$label" in *[!A-Za-z0-9_-]*|'') label="task" ;; esac
+_input=$(cat)
+_task=$(printf '%s' "${_input}" | jq -r '.task // empty')
+[ -n "${_task}" ] || { echo "error: missing 'task'"; exit 1; }
+_label=$(printf '%s' "${_input}" | jq -r '.label // empty')
+case "${_label}" in *[!A-Za-z0-9_-]*|'') _label="task" ;; esac
 
 # A unique, inspectable child session name (no random/awk deps). Children live
 # alongside normal sessions under HARSH_SESSIONS_DIR, prefixed so they stand out.
-child="agent-$label-$(date -u +%Y%m%d-%H%M%S)-$$"
+_child="agent-${_label}-$(date -u +%Y%m%d-%H%M%S)-$$"
 
 # The child inherits an incremented depth (so any agents IT spawns count up).
-HARSH_AGENT_DEPTH=$((depth + 1)); export HARSH_AGENT_DEPTH
+HARSH_AGENT_DEPTH=$((_depth + 1)); export HARSH_AGENT_DEPTH
 
 # Create the child session and run the task. Child output is discarded — the
 # result is read back off disk via `final` so only the summary reaches the parent.
-sh "$HARSH_SELF" new "$child" >/dev/null 2>&1 || { echo "error: could not create sub-session"; exit 1; }
+sh "${HARSH_SELF}" new "${_child}" >/dev/null 2>&1 || { echo "error: could not create sub-session"; exit 1; }
 
-errf=$(mktemp 2>/dev/null || printf '/tmp/harsh_agent.%s' "$$")
-if ! sh "$HARSH_SELF" -q ask "$child" "$task" >/dev/null 2>"$errf"; then
-  printf 'sub-agent run failed: %s\n' "$(cat "$errf" 2>/dev/null)"
-  rm -f "$errf"
+_errf=$(mktemp 2>/dev/null || printf '/tmp/harsh_agent.%s' "$$")
+if ! sh "${HARSH_SELF}" -q ask "${_child}" "${_task}" >/dev/null 2>"${_errf}"; then
+  printf 'sub-agent run failed: %s\n' "$(cat "${_errf}" 2>/dev/null)"
+  rm -f "${_errf}"
   exit 1
 fi
-rm -f "$errf"
+rm -f "${_errf}"
 
-result=$(sh "$HARSH_SELF" final "$child")
-if [ -n "$result" ]; then
-  printf '%s\n' "$result"
+_result=$(sh "${HARSH_SELF}" final "${_child}")
+if [ -n "${_result}" ]; then
+  printf '%s\n' "${_result}"
 else
-  printf '(sub-agent produced no final message; inspect session %s)\n' "$child"
+  printf '(sub-agent produced no final message; inspect session %s)\n' "${_child}"
 fi

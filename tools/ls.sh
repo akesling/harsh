@@ -7,6 +7,6 @@ if [ "${1:-}" = --schema ]; then
 EOF
   exit 0
 fi
-input=$(cat)
-path=$(printf '%s' "$input" | jq -r '.path // "."')
-ls -la "$path" 2>&1
+_input=$(cat)
+_path=$(printf '%s' "${_input}" | jq -r '.path // "."')
+ls -la "${_path}" 2>&1

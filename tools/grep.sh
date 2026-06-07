@@ -7,12 +7,12 @@ if [ "${1:-}" = --schema ]; then
 EOF
   exit 0
 fi
-input=$(cat)
-pat=$(printf '%s' "$input" | jq -r '.pattern // empty')
-[ -n "$pat" ] || { echo "error: missing 'pattern'"; exit 1; }
-path=$(printf '%s' "$input" | jq -r '.path // "."')
+_input=$(cat)
+_pat=$(printf '%s' "${_input}" | jq -r '.pattern // empty')
+[ -n "${_pat}" ] || { echo "error: missing 'pattern'"; exit 1; }
+_path=$(printf '%s' "${_input}" | jq -r '.path // "."')
 if command -v rg >/dev/null 2>&1; then
-  rg -n --color=never -- "$pat" "$path" 2>&1 | head -n 200
+  rg -n --color=never -- "${_pat}" "${_path}" 2>&1 | head -n 200
 else
-  grep -rn -- "$pat" "$path" 2>&1 | head -n 200
+  grep -rn -- "${_pat}" "${_path}" 2>&1 | head -n 200
 fi

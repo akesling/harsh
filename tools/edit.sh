@@ -7,15 +7,15 @@ if [ "${1:-}" = --schema ]; then
 EOF
   exit 0
 fi
-input=$(cat)
-path=$(printf '%s' "$input" | jq -r '.path // empty')
-[ -n "$path" ] || { echo "error: missing 'path'"; exit 1; }
-[ -f "$path" ] || { echo "error: no such file: $path"; exit 1; }
+_input=$(cat)
+_path=$(printf '%s' "${_input}" | jq -r '.path // empty')
+[ -n "${_path}" ] || { echo "error: missing 'path'"; exit 1; }
+[ -f "${_path}" ] || { echo "error: no such file: ${_path}"; exit 1; }
 
-errf=$(mktemp 2>/dev/null || echo /tmp/harsh_edit.$$)
+_errf=$(mktemp 2>/dev/null || echo /tmp/harsh_edit.$$)
 # Read the file raw (-Rs), split on the literal old string, rejoin. jq's
 # split/join are literal (not regex), which keeps this safe for any content.
-result=$(jq -Rsr --argjson in "$input" '
+_result=$(jq -Rsr --argjson in "${_input}" '
   ($in.old) as $old | ($in.new) as $new | ($in.all // false) as $all |
   (split($old)) as $p | ($p | length - 1) as $count |
   if $count == 0 then error("old string not found in file")
@@ -23,13 +23,13 @@ result=$(jq -Rsr --argjson in "$input" '
     then error("old string is not unique (" + ($count|tostring) + " matches); set all=true or add context")
   elif $all then ($p | join($new))
   else ($p[0] + $new + ($p[1:] | join($old))) end
-' "$path" 2>"$errf")
-rc=$?
-if [ "$rc" -ne 0 ]; then
-  echo "error: $(cat "$errf" | sed 's/^jq: error.*: //')"
-  rm -f "$errf"
+' "${_path}" 2>"${_errf}")
+_rc=$?
+if [ "${_rc}" -ne 0 ]; then
+  echo "error: $(sed 's/^jq: error.*: //' "${_errf}")"
+  rm -f "${_errf}"
   exit 1
 fi
-rm -f "$errf"
-printf '%s' "$result" > "$path"
-echo "edited $path"
+rm -f "${_errf}"
+printf '%s' "${_result}" > "${_path}"
+echo "edited ${_path}"

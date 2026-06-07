@@ -19,116 +19,116 @@ set -u
 if [ -n "${ZSH_VERSION:-}" ]; then
   emulate sh 2>/dev/null || setopt sh_word_split 2>/dev/null || true
 fi
-REPO=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+_repo=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 
-prefix=""; name="ha"; share=""; conf=""; data=""; link=0; uninstall=0
+_prefix=""; _name="ha"; _share=""; _conf=""; _data=""; _link=0; _uninstall=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --prefix) prefix=$2; shift 2 ;;
-    --name)   name=$2;   shift 2 ;;
-    --share)  share=$2;  shift 2 ;;
-    --config) conf=$2;   shift 2 ;;
-    --data)   data=$2;   shift 2 ;;
-    --link)   link=1;    shift ;;
-    --uninstall) uninstall=1; shift ;;
+    --prefix) _prefix=$2; shift 2 ;;
+    --name)   _name=$2;   shift 2 ;;
+    --share)  _share=$2;  shift 2 ;;
+    --config) _conf=$2;   shift 2 ;;
+    --data)   _data=$2;   shift 2 ;;
+    --link)   _link=1;    shift ;;
+    --uninstall) _uninstall=1; shift ;;
     -h|--help) sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'install.sh: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 
 # Resolve locations (XDG-ish defaults).
-[ -n "$conf" ]  || conf="${XDG_CONFIG_HOME:-$HOME/.config}/harsh/harsh.conf"
-[ -n "$share" ] || share="${XDG_DATA_HOME:-$HOME/.local/share}/harsh"
-[ "$link" = 1 ] && share="$REPO"          # dev mode: run straight from the checkout
-[ -n "$data" ]  || data="$share"
-if [ -z "$prefix" ]; then
-  for d in "$HOME/.local/bin" "$HOME/bin" /usr/local/bin; do
-    case ":$PATH:" in *":$d:"*) prefix=$d; break ;; esac
+[ -n "${_conf}" ]  || _conf="${XDG_CONFIG_HOME:-${HOME}/.config}/harsh/harsh.conf"
+[ -n "${_share}" ] || _share="${XDG_DATA_HOME:-${HOME}/.local/share}/harsh"
+[ "${_link}" = 1 ] && _share="${_repo}"          # dev mode: run straight from the checkout
+[ -n "${_data}" ]  || _data="${_share}"
+if [ -z "${_prefix}" ]; then
+  for _d in "${HOME}/.local/bin" "${HOME}/bin" /usr/local/bin; do
+    case ":${PATH}:" in *":${_d}:"*) _prefix=${_d}; break ;; esac
   done
-  [ -n "$prefix" ] || prefix="$HOME/.local/bin"
+  [ -n "${_prefix}" ] || _prefix="${HOME}/.local/bin"
 fi
-target="$prefix/$name"
+_target="${_prefix}/${_name}"
 
-if [ "$uninstall" = 1 ]; then
-  if [ -e "$target" ] || [ -h "$target" ]; then
-    rm -f "$target" && printf 'removed %s\n' "$target"
+if [ "${_uninstall}" = 1 ]; then
+  if [ -e "${_target}" ] || [ -h "${_target}" ]; then
+    rm -f "${_target}" && printf 'removed %s\n' "${_target}"
   else
-    printf 'nothing to remove at %s\n' "$target"
+    printf 'nothing to remove at %s\n' "${_target}"
   fi
-  printf 'left config (%s) and data (%s) untouched.\n' "$conf" "$data"
-  printf 'to remove the runtime too: rm -rf %s\n' "$share"
+  printf 'left config (%s) and data (%s) untouched.\n' "${_conf}" "${_data}"
+  printf 'to remove the runtime too: rm -rf %s\n' "${_share}"
   exit 0
 fi
 
 # Warn (don't fail) on missing runtime dependencies.
-missing=""
-for c in jq curl; do
-  command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+_missing=""
+for _c in jq curl; do
+  command -v "${_c}" >/dev/null 2>&1 || _missing="${_missing} ${_c}"
 done
-[ -n "$missing" ] && printf 'warning: missing dependencies:%s — install before using harsh\n' "$missing" >&2
+[ -n "${_missing}" ] && printf 'warning: missing dependencies:%s — install before using harsh\n' "${_missing}" >&2
 
 # Copy the runtime into the install root (unless --link). Program assets are
 # merged in (overwriting shipped files, keeping any you added); sessions/ and
 # logs/ are never touched.
-if [ "$link" = 0 ]; then
-  mkdir -p "$share" || { printf 'install.sh: cannot create %s\n' "$share" >&2; exit 1; }
-  for d in tools skills hooks commands lib; do
-    mkdir -p "$share/$d"
-    cp -R "$REPO/$d/." "$share/$d/" || { printf 'install.sh: copy of %s failed\n' "$d" >&2; exit 1; }
+if [ "${_link}" = 0 ]; then
+  mkdir -p "${_share}" || { printf 'install.sh: cannot create %s\n' "${_share}" >&2; exit 1; }
+  for _d in tools skills hooks commands lib; do
+    mkdir -p "${_share}/${_d}"
+    cp -R "${_repo}/${_d}/." "${_share}/${_d}/" || { printf 'install.sh: copy of %s failed\n' "${_d}" >&2; exit 1; }
   done
-  cp "$REPO/harsh.sh" "$REPO/harsh_tui.sh" "$share/" || { printf 'install.sh: copy failed\n' >&2; exit 1; }
-  chmod +x "$share/harsh.sh" 2>/dev/null || true
-  printf 'copied runtime to %s\n' "$share"
+  cp "${_repo}/harsh.sh" "${_repo}/harsh_tui.sh" "${_share}/" || { printf 'install.sh: copy failed\n' >&2; exit 1; }
+  chmod +x "${_share}/harsh.sh" 2>/dev/null || true
+  printf 'copied runtime to %s\n' "${_share}"
 else
-  printf 'linking to checkout %s (dev mode)\n' "$share"
+  printf 'linking to checkout %s (dev mode)\n' "${_share}"
 fi
 
 # Write the config (absolute paths). Keep an existing one as-is.
-mkdir -p "$(dirname "$conf")" "$data/sessions" "$data/logs" \
+mkdir -p "$(dirname "${_conf}")" "${_data}/sessions" "${_data}/logs" \
   || { printf 'install.sh: cannot create config/data dirs\n' >&2; exit 1; }
-if [ -e "$conf" ]; then
-  printf 'kept existing config %s\n' "$conf"
+if [ -e "${_conf}" ]; then
+  printf 'kept existing config %s\n' "${_conf}"
 else
-  cat > "$conf" <<EOF
+  cat > "${_conf}" <<EOF
 # harsh configuration — written by install.sh.
 # Directories are absolute so harsh finds them regardless of how it is launched.
-HARSH_TOOLS_DIR="$share/tools"
-HARSH_SKILLS_DIR="$share/skills"
-HARSH_HOOKS_DIR="$share/hooks"
-HARSH_COMMANDS_DIR="$share/commands"
-HARSH_SESSIONS_DIR="$data/sessions"
-HARSH_LOG_DIR="$data/logs"
+HARSH_TOOLS_DIR="${_share}/tools"
+HARSH_SKILLS_DIR="${_share}/skills"
+HARSH_HOOKS_DIR="${_share}/hooks"
+HARSH_COMMANDS_DIR="${_share}/commands"
+HARSH_SESSIONS_DIR="${_data}/sessions"
+HARSH_LOG_DIR="${_data}/logs"
 # Model (key comes from \$ANTHROPIC_API_KEY / \$HARSH_API_KEY in the environment):
 HARSH_MODEL=claude-opus-4-8
 EOF
-  printf 'wrote config %s\n' "$conf"
+  printf 'wrote config %s\n' "${_conf}"
 fi
 
 # Write the launcher: export HARSH_CONFIG (inherited by every subprocess,
 # including the TUI) and exec the installed harsh.sh by absolute path.
-mkdir -p "$prefix" || { printf 'install.sh: cannot create %s\n' "$prefix" >&2; exit 1; }
+mkdir -p "${_prefix}" || { printf 'install.sh: cannot create %s\n' "${_prefix}" >&2; exit 1; }
 {
   printf '#!/usr/bin/env sh\n'
   printf '# harsh launcher (generated by install.sh)\n'
-  printf 'export HARSH_CONFIG="%s"\n' "$conf"
+  printf 'export HARSH_CONFIG="%s"\n' "${_conf}"
   # shellcheck disable=SC2016  # $@ must stay literal in the generated launcher
-  printf 'exec sh "%s/harsh.sh" "$@"\n' "$share"
-} > "$target" || { printf 'install.sh: cannot write %s\n' "$target" >&2; exit 1; }
-chmod +x "$target"
-printf 'wrote launcher %s\n' "$target"
+  printf 'exec sh "%s/harsh.sh" "$@"\n' "${_share}"
+} > "${_target}" || { printf 'install.sh: cannot write %s\n' "${_target}" >&2; exit 1; }
+chmod +x "${_target}"
+printf 'wrote launcher %s\n' "${_target}"
 
 # PATH advice + next steps.
-case ":$PATH:" in
-  *":$prefix:"*) : ;;
+case ":${PATH}:" in
+  *":${_prefix}:"*) : ;;
   *)
     # shellcheck disable=SC2016  # literal $PATH is intentional in the advice text
-    printf '\n%s is not on your PATH. Add to your shell rc:\n  export PATH="%s:$PATH"\n' "$prefix" "$prefix" ;;
+    printf '\n%s is not on your PATH. Add to your shell rc:\n  export PATH="%s:$PATH"\n' "${_prefix}" "${_prefix}" ;;
 esac
 cat <<EOF
 
 Installed. Set a key, then go:
   export ANTHROPIC_API_KEY=sk-ant-...
-  $name              # REPL  (or: HARSH_MOCK=1 $name  to try it offline)
-  $name tui          # fzf chat TUI
-  $name help
+  ${_name}              # REPL  (or: HARSH_MOCK=1 ${_name}  to try it offline)
+  ${_name} tui          # fzf chat TUI
+  ${_name} help
 EOF

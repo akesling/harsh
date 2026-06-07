@@ -3,14 +3,14 @@
 #
 # The runner (tests/run.sh) gives every test its own tempdir and exports a
 # sandbox config via HARSH_CONFIG (sessions/logs/hooks all redirected into the
-# tempdir) plus HARSH_MOCK=1 and HARSH_HOOKS_DIR. Nothing here touches the real
-# sessions/ or logs/ directories.
+# tempdir) plus HARSH_MOCK=1 and HARSH_HOOKS_DIR. ROOT is the project root,
+# published by the runner. Nothing here touches the real sessions/ or logs/.
 
 # Run the harness with the sandbox config (taken from HARSH_CONFIG in the env).
-hsh() { sh "$ROOT/harsh.sh" "$@"; }
+hsh() { sh "${ROOT}/harsh.sh" "$@"; }
 
 # Run a tool by name with a JSON argument:  tool NAME '{"...":...}'
-tool() { printf '%s' "$2" | sh "$ROOT/tools/tool.sh" call "$1"; }
+tool() { printf '%s' "$2" | sh "${ROOT}/tools/tool.sh" call "$1"; }
 
 # Create a fresh session and print its directory.
 hnew() { hsh new "${1:-tc}"; }
@@ -20,9 +20,9 @@ hnew() { hsh new "${1:-tc}"; }
 #   echo deny; exit 2
 #   EOF
 install_hook() {
-  p="$HARSH_HOOKS_DIR/$1"
-  mkdir -p "$(dirname "$p")"
-  cat > "$p"
+  _p="${HARSH_HOOKS_DIR}/$1"
+  mkdir -p "$(dirname "${_p}")"
+  cat > "${_p}"
 }
 
 # --- assertions: each prints and exits non-zero on failure -------------------

@@ -2,13 +2,13 @@
 # The dependency-free REPL, driven non-interactively (piped stdin).
 
 test_repl_quit_exits_clean() {
-  printf '/quit\n' | hsh repl rt >/dev/null 2>&1; rc=$?
-  assert_eq "$rc" 0 'exit code'
+  printf '/quit\n' | hsh repl rt >/dev/null 2>&1; _rc=$?
+  assert_eq "${_rc}" 0 'exit code'
 }
 
 test_repl_eof_exits_clean() {
-  : | hsh repl rt >/dev/null 2>&1; rc=$?
-  assert_eq "$rc" 0 'exit code'
+  : | hsh repl rt >/dev/null 2>&1; _rc=$?
+  assert_eq "${_rc}" 0 'exit code'
 }
 
 test_repl_message_is_recorded() {
@@ -25,48 +25,48 @@ test_repl_slash_skill_runs() {
 test_repl_sessions_lists_past_sessions() {
   hsh new alpha-sess >/dev/null
   printf '%s\n' '/sessions' '/quit' | hsh repl rt >/dev/null 2>&1
-  out=$(printf '%s\n' '/sessions' '/quit' | hsh repl rt 2>&1)
-  assert_contains "$out" 'alpha-sess'
+  _out=$(printf '%s\n' '/sessions' '/quit' | hsh repl rt 2>&1)
+  assert_contains "${_out}" 'alpha-sess'
 }
 
 test_repl_resume_switches_session() {
   # Seed a target session with a distinctive message.
   printf '%s\n' 'marker-in-target' '/quit' | hsh repl tgt-sess >/dev/null 2>&1
   # From a different session, /resume should switch and show the target.
-  out=$(printf '%s\n' '/resume tgt-sess' '/session' '/quit' | hsh repl other-sess 2>&1)
-  assert_contains "$out" 'tgt-sess'
-  assert_contains "$out" 'marker-in-target'
+  _out=$(printf '%s\n' '/resume tgt-sess' '/session' '/quit' | hsh repl other-sess 2>&1)
+  assert_contains "${_out}" 'tgt-sess'
+  assert_contains "${_out}" 'marker-in-target'
 }
 
 test_repl_resume_unknown_is_reported() {
-  out=$(printf '%s\n' '/resume nope-nonexistent' '/quit' | hsh repl rt 2>&1)
-  assert_contains "$out" 'no such session'
+  _out=$(printf '%s\n' '/resume nope-nonexistent' '/quit' | hsh repl rt 2>&1)
+  assert_contains "${_out}" 'no such session'
 }
 
 test_repl_resume_without_arg_shows_usage() {
-  out=$(printf '%s\n' '/resume' '/quit' | hsh repl rt 2>&1)
-  assert_contains "$out" 'usage'
+  _out=$(printf '%s\n' '/resume' '/quit' | hsh repl rt 2>&1)
+  assert_contains "${_out}" 'usage'
 }
 
 test_verbose_expands_entry_by_seq() {
-  s=$(hnew vexp)
-  hsh -q ask "$s" 'go [[tool:bash:echo verbosemarker]]' >/dev/null
+  _s=$(hnew vexp)
+  hsh -q ask "${_s}" 'go [[tool:bash:echo verbosemarker]]' >/dev/null
   # the collapsed REPL line hides tool output, but `verbose SEQ` brings it back.
   # the tool_result is the highest-numbered entry; find it from the manifest.
-  seq=$(awk -F, '$3=="tool_result"{s=$1} END{print s}' "$s/manifest.csv")
-  assert_contains "$(hsh verbose "$s" "$seq")" 'verbosemarker'
+  _seq=$(awk -F, '$3=="tool_result"{s=$1} END{print s}' "${_s}/manifest.csv")
+  assert_contains "$(hsh verbose "${_s}" "${_seq}")" 'verbosemarker'
 }
 
 test_verbose_tolerates_hash_and_unpadded_seq() {
-  s=$(hnew vexp2)
-  hsh -q ask "$s" 'go [[tool:bash:echo hashok]]' >/dev/null
-  seq=$(awk -F, '$3=="tool_result"{s=$1} END{print s}' "$s/manifest.csv")
-  unpadded=$(printf '%s' "$seq" | sed 's/^0*//')
-  assert_contains "$(hsh verbose "$s" "#$unpadded")" 'hashok'
+  _s=$(hnew vexp2)
+  hsh -q ask "${_s}" 'go [[tool:bash:echo hashok]]' >/dev/null
+  _seq=$(awk -F, '$3=="tool_result"{s=$1} END{print s}' "${_s}/manifest.csv")
+  _unpadded=$(printf '%s' "${_seq}" | sed 's/^0*//')
+  assert_contains "$(hsh verbose "${_s}" "#${_unpadded}")" 'hashok'
 }
 
 test_verbose_bad_seq_is_error() {
-  s=$(hnew vexp3)
-  hsh verbose "$s" 'notanumber' >/dev/null 2>&1; rc=$?
-  assert_eq "$rc" 1 'non-numeric SEQ is rejected'
+  _s=$(hnew vexp3)
+  hsh verbose "${_s}" 'notanumber' >/dev/null 2>&1; _rc=$?
+  assert_eq "${_rc}" 1 'non-numeric SEQ is rejected'
 }

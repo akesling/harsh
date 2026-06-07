@@ -24,55 +24,56 @@ set -u
 if [ -n "${ZSH_VERSION:-}" ]; then
   emulate sh 2>/dev/null || setopt sh_word_split 2>/dev/null || true
 fi
-DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+_self_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 # Invoke sibling scripts through `sh` so the TUI works even when the scripts
-# are not marked executable or live on a noexec mount.
-HARSH="sh $DIR/harsh.sh"
-SELF="sh $DIR/harsh_tui.sh"
+# are not marked executable or live on a noexec mount. (Left unquoted at the
+# call sites so the "sh <path>" splits into command + argument.)
+_harsh="sh ${_self_dir}/harsh.sh"
+_self="sh ${_self_dir}/harsh_tui.sh"
 
-sub=${1:-}
+_sub=${1:-}
 
 # ---------------------------------------------------------------------------
 # internal subcommands (used by the optional fzf turn browser)
 # ---------------------------------------------------------------------------
-case "$sub" in
+case "${_sub}" in
   # produce the turn list for fzf (SEQ \t label)
   _list)
-    sess=$2
-    dir=$($HARSH path "$sess")
-    [ -f "$dir/manifest.csv" ] || exit 0
+    _sess=$2
+    _dir=$(${_harsh} path "${_sess}")
+    [ -f "${_dir}/manifest.csv" ] || exit 0
     # Read all manifest columns by name for clarity; type/ts/status go unused here.
     # shellcheck disable=SC2034
-    while IFS=, read -r seq role type name file ts status; do
-      [ -n "$seq" ] || continue
-      f="$dir/$file"
-      [ -f "$f" ] || continue
-      case "$role" in user) icon='›' ;; assistant) icon='·' ;; *) icon=' ' ;; esac
-      label=$(jq -r '
+    while IFS=, read -r _seq _role _type _name _file _ts _status; do
+      [ -n "${_seq}" ] || continue
+      _f="${_dir}/${_file}"
+      [ -f "${_f}" ] || continue
+      case "${_role}" in user) _icon='›' ;; assistant) _icon='·' ;; *) _icon=' ' ;; esac
+      _label=$(jq -r '
         .block as $b |
         (if $b.type=="text" then $b.text
          elif $b.type=="tool_use" then "⚙ " + $b.name + " " + ($b.input|tojson)
          elif $b.type=="tool_result" then "↩ " + ($b.content|tostring)
          else ($b|tojson) end)
-        | gsub("[\n\t]";" ") | .[0:90]' "$f")
-      printf '%s\t%s %s\n' "$seq" "$icon" "$label"
-    done < "$dir/manifest.csv"
+        | gsub("[\n\t]";" ") | .[0:90]' "${_f}")
+      printf '%s\t%s %s\n' "${_seq}" "${_icon}" "${_label}"
+    done < "${_dir}/manifest.csv"
     exit 0
     ;;
 
   # preview pane for the selected turn (fzf browser)
   _preview)
-    sess=$2; seq=${3:-}
-    dir=$($HARSH path "$sess")
-    [ -n "$seq" ] || { echo "Select a turn to preview it."; exit 0; }
-    for f in "$dir/$seq"-*.json; do
-      [ -e "$f" ] || continue
+    _sess=$2; _seq=${3:-}
+    _dir=$(${_harsh} path "${_sess}")
+    [ -n "${_seq}" ] || { echo "Select a turn to preview it."; exit 0; }
+    for _f in "${_dir}/${_seq}"-*.json; do
+      [ -e "${_f}" ] || continue
       jq -r '.role as $r | .block as $b |
         "── " + $r + " / " + $b.type + " ──\n\n" +
         (if $b.type=="text" then $b.text
          elif $b.type=="tool_use" then ($b.name + "\n\n" + ($b.input | tojson))
          elif $b.type=="tool_result" then ($b.content | tostring)
-         else ($b | tojson) end)' "$f"
+         else ($b | tojson) end)' "${_f}"
     done
     exit 0
     ;;
@@ -80,20 +81,20 @@ case "$sub" in
   # preview pane for a whole session (the session picker). Shows a compact,
   # one-line-per-turn transcript so you can recognize a conversation at a glance.
   _spreview)
-    sess=$2
-    [ "$sess" = NEW ] && { echo "Start a brand-new conversation."; exit 0; }
-    dir=$($HARSH path "$sess")
-    [ -f "$dir/manifest.csv" ] || { echo "(empty session)"; exit 0; }
-    printf '── %s ──\n\n' "$sess"
-    for f in "$dir"/[0-9]*.json; do
-      [ -e "$f" ] || continue
+    _sess=$2
+    [ "${_sess}" = NEW ] && { echo "Start a brand-new conversation."; exit 0; }
+    _dir=$(${_harsh} path "${_sess}")
+    [ -f "${_dir}/manifest.csv" ] || { echo "(empty session)"; exit 0; }
+    printf '── %s ──\n\n' "${_sess}"
+    for _f in "${_dir}"/[0-9]*.json; do
+      [ -e "${_f}" ] || continue
       jq -r '.role as $r | .block as $b |
         (if $r=="user" then "› " elif $r=="assistant" then "· " else "  " end) +
         (if $b.type=="text" then $b.text
          elif $b.type=="tool_use" then "⚙ " + $b.name + " " + ($b.input|tojson)
          elif $b.type=="tool_result" then "↩ " + ($b.content|tostring)
          else ($b|tojson) end)
-        | gsub("[\n\t]";" ")' "$f"
+        | gsub("[\n\t]";" ")' "${_f}"
     done
     exit 0
     ;;
@@ -106,17 +107,13 @@ esac
 # Shared presentation helpers (palette + fmt_markdown), kept in lib/render.sh so
 # the TUI and the core REPL never drift in look. Guarded with inert fallbacks so
 # the TUI degrades gracefully if the lib is missing.
-if [ -f "$DIR/lib/render.sh" ]; then
+if [ -f "${_self_dir}/lib/render.sh" ]; then
   # shellcheck disable=SC1091
-  . "$DIR/lib/render.sh"
+  . "${_self_dir}/lib/render.sh"
 else
-  # Inert palette/format fallbacks for when lib/render.sh is absent. Markdown-only
-  # colors (e.g. italic) are omitted here: they're used solely by render.sh's
-  # fmt_markdown, which self-defines them; the fallback fmt_markdown is plain cat.
   C_DIM=; C_RST=; C_USER=; C_AI=; C_TOOL=; C_BAR=; C_GUT=; C_RES=; GUTTER='|'
   fmt_markdown() { cat; }
-  speaker() { printf '%s %s\n' "$GUTTER" "$1"; }
-  gutter()  { sed "s/^/$GUTTER /"; }
+  gutter()  { sed "s/^/${GUTTER} /"; }
   body()    { sed 's/^/  /'; }
   tool_oneline() { printf '%s %s\n' "$1" "$2"; }
 fi
@@ -124,63 +121,63 @@ fi
 # Strip leading zeros from a numeric string (POSIX-safe). Avoids feeding a
 # zero-padded seq like "0008" straight into $(( )), where leading zeros mean
 # octal and "0008"/"0009" would error.
-dec() { d=${1#"${1%%[!0]*}"}; printf '%s' "${d:-0}"; }
+dec() { _d=${1#"${1%%[!0]*}"}; printf '%s' "${_d:-0}"; }
 
 # Render the transcript as colorized, prefixed lines. Reuses the same per-entry
 # decoding the core uses, so the TUI never drifts from `harsh show`. An optional
 # second argument anchors the render: only entries with SEQ >= from_seq are
 # drawn, so `/map` can "jump" the view to a chosen prompt.
 render_transcript() {
-  dir=$1; from_seq=${2:-}
-  for f in "$dir"/[0-9]*.json; do
-    [ -e "$f" ] || continue
-    seq=$(basename "$f"); seq=${seq%%-*}
-    if [ -n "$from_seq" ]; then
+  _dir=$1; _from_seq=${2:-}
+  for _f in "${_dir}"/[0-9]*.json; do
+    [ -e "${_f}" ] || continue
+    _seq=$(basename "${_f}"); _seq=${_seq%%-*}
+    if [ -n "${_from_seq}" ]; then
       # Numeric compare with leading zeros stripped (POSIX; no base-conversion).
-      [ "$(dec "$seq")" -ge "$(dec "$from_seq")" ] || continue
+      [ "$(dec "${_seq}")" -ge "$(dec "${_from_seq}")" ] || continue
     fi
-    role=$(jq -r '.role' "$f")
-    btype=$(jq -r '.block.type' "$f")
+    _role=$(jq -r '.role' "${_f}")
+    _btype=$(jq -r '.block.type' "${_f}")
     # Prose is the content you read, so it gets a header + clean indent. Tool
     # mechanics are skimmable, so they collapse to one dim line each — matching
     # the REPL (cmd_step in harsh.sh) so the two never drift in look.
-    case "$role:$btype" in
+    case "${_role}:${_btype}" in
       user:text)
-        printf '%syou%s\n' "$C_USER" "$C_RST"
-        jq -r '.block.text' "$f" | body "$C_USER" ;;
+        printf '%syou%s\n' "${C_USER}" "${C_RST}"
+        jq -r '.block.text' "${_f}" | body "${C_USER}" ;;
       assistant:text)
         # Skip empty prose blocks that accompany a tool call.
-        txt=$(jq -r '.block.text' "$f")
-        if [ -n "$(printf '%s' "$txt" | tr -d '[:space:]')" ]; then
-          printf '%sharsh%s\n' "$C_AI" "$C_RST"
-          printf '%s' "$txt" | fmt_markdown | body
+        _txt=$(jq -r '.block.text' "${_f}")
+        if [ -n "$(printf '%s' "${_txt}" | tr -d '[:space:]')" ]; then
+          printf '%sharsh%s\n' "${C_AI}" "${C_RST}"
+          printf '%s' "${_txt}" | fmt_markdown | body
         else
           continue
         fi ;;
       assistant:tool_use)
-        name=$(jq -r '.block.name' "$f")
-        input=$(jq -c '.block.input' "$f")
-        tool_oneline "$name" "$input" ;;
+        _name=$(jq -r '.block.name' "${_f}")
+        _input=$(jq -c '.block.input' "${_f}")
+        tool_oneline "${_name}" "${_input}" ;;
       *:tool_result)
         # Append the result's line-count to the preceding call line, tagged with
         # its #seq handle. On error (or under HARSH_VERBOSE) show the output; on
         # success a single glance ("→ N lines · #SEQ") suffices.
-        out=$(jq -r '.block.content | tostring' "$f")
-        iserr=$(jq -r '.block.is_error // false' "$f")
-        lines=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
-        if [ "$iserr" = true ]; then
-          printf '  %s→ error · #%s%s\n' "$C_TOOL" "$seq" "$C_RST"
-          printf '%s\n' "$out" | head -n 8 | gutter "$C_GUT" "$C_RES"
+        _out=$(jq -r '.block.content | tostring' "${_f}")
+        _iserr=$(jq -r '.block.is_error // false' "${_f}")
+        _lines=$(printf '%s\n' "${_out}" | wc -l | tr -d ' ')
+        if [ "${_iserr}" = true ]; then
+          printf '  %s→ error · #%s%s\n' "${C_TOOL}" "${_seq}" "${C_RST}"
+          printf '%s\n' "${_out}" | head -n 8 | gutter "${C_GUT}" "${C_RES}"
         else
           printf '  %s→ %s line%s · #%s%s\n' \
-            "$C_DIM" "$lines" "$( [ "$lines" = 1 ] || printf s )" "$seq" "$C_RST"
-          [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "$out" | gutter "$C_GUT" "$C_RES"
+            "${C_DIM}" "${_lines}" "$( [ "${_lines}" = 1 ] || printf s )" "${_seq}" "${C_RST}"
+          [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "${_out}" | gutter "${C_GUT}" "${C_RES}"
         fi
         # No trailing blank: keep the result snug under its call line.
         continue ;;
       *)
-        printf '%s%s/%s%s\n' "$C_DIM" "$role" "$btype" "$C_RST"
-        jq -r '.block | tojson' "$f" | body "$C_GUT" ;;
+        printf '%s%s/%s%s\n' "${C_DIM}" "${_role}" "${_btype}" "${C_RST}"
+        jq -r '.block | tojson' "${_f}" | body "${C_GUT}" ;;
     esac
     printf '\n'
   done
@@ -190,25 +187,25 @@ render_transcript() {
 # transcript is piped through a pager-free tail so the newest turn is visible;
 # the terminal's own scrollback keeps the rest.
 redraw() {
-  dir=$1; from_seq=${2:-}
+  _dir=$1; _from_seq=${2:-}
   clear 2>/dev/null || printf '\033[2J\033[H'
-  render_transcript "$dir" "$from_seq"
+  render_transcript "${_dir}" "${_from_seq}"
   printf '%s' "${C_BAR}"
-  printf '╶─ harsh · %s' "$(basename "$dir")"
-  [ -n "$from_seq" ] && printf ' · from #%s (/show for full)' "$from_seq"
+  printf '╶─ harsh · %s' "$(basename "${_dir}")"
+  [ -n "${_from_seq}" ] && printf ' · from #%s (/show for full)' "${_from_seq}"
   printf ' ─╴%s\n' "${C_RST}"
-  printf '%sEnter: send · /verbose · /map · /browse · /help · /quit%s\n' "$C_DIM" "$C_RST"
+  printf '%sEnter: send · /verbose · /map · /browse · /help · /quit%s\n' "${C_DIM}" "${C_RST}"
 }
 
 # Optional fzf turn browser, bound to Ctrl-G. Read-only.
 browse() {
-  sess=$1
+  _sess=$1
   command -v fzf >/dev/null 2>&1 || { echo "(fzf not installed)"; return 0; }
-  $SELF _list "$sess" | fzf \
+  ${_self} _list "${_sess}" | fzf \
     --ansi --reverse --no-sort --cycle \
     --delimiter '\t' --with-nth '2..' \
     --header "browse turns — Esc: back" \
-    --preview "$SELF _preview '$sess' {1}" \
+    --preview "${_self} _preview '${_sess}' {1}" \
     --preview-window 'down:65%:wrap' \
     --bind 'start:last' >/dev/null 2>&1 || true
 }
@@ -218,68 +215,68 @@ browse() {
 # stdout (empty if cancelled), so the caller can jump the transcript there.
 # Reuses the core's `outline` view and the per-turn `_preview` pane.
 map() {
-  sess=$1
+  _sess=$1
   command -v fzf >/dev/null 2>&1 || { echo "(fzf not installed)"; return 0; }
-  list=$($HARSH outline "$sess")
-  [ -n "$list" ] || { echo "(no prompts yet)"; return 0; }
+  _list=$(${_harsh} outline "${_sess}")
+  [ -n "${_list}" ] || { echo "(no prompts yet)"; return 0; }
   # Columns: SEQ \t PROMPT \t SUMMARY. Show prompt + summary; keep SEQ ({1})
   # for the preview and the return value.
-  sel=$(printf '%s\n' "$list" | fzf \
+  _sel=$(printf '%s\n' "${_list}" | fzf \
     --ansi --reverse --no-sort --cycle \
     --delimiter '\t' --with-nth '2..' \
     --header 'minimap — Enter/click: jump · Esc: back' \
     --bind 'enter:accept' \
-    --preview "$SELF _preview '$sess' {1}" \
+    --preview "${_self} _preview '${_sess}' {1}" \
     --preview-window 'down:60%:wrap' 2>/dev/null) || true
-  printf '%s' "${sel%%	*}"
+  printf '%s' "${_sel%%	*}"
 }
 
 # Pick a session to resume via fzf, or start a new one. Prints the chosen
 # session name (or directory) on stdout. Falls back to a fresh session when
 # fzf is unavailable or there is nothing to resume.
 pick_session() {
-  command -v fzf >/dev/null 2>&1 || { $HARSH new; return; }
-  list=$($HARSH sessions)
-  [ -n "$list" ] || { $HARSH new; return; }
-  choice=$( { printf 'NEW\t＋ new conversation\n'; printf '%s\n' "$list"; } | fzf \
+  command -v fzf >/dev/null 2>&1 || { ${_harsh} new; return; }
+  _list=$(${_harsh} sessions)
+  [ -n "${_list}" ] || { ${_harsh} new; return; }
+  _choice=$( { printf 'NEW\t＋ new conversation\n'; printf '%s\n' "${_list}"; } | fzf \
     --ansi --reverse --no-sort --cycle \
     --delimiter '\t' --with-nth '2..' \
     --header 'resume a conversation — Enter: open · Esc: cancel' \
-    --preview "$SELF _spreview {1}" \
+    --preview "${_self} _spreview {1}" \
     --preview-window 'down:65%:wrap' ) || true
-  sel=${choice%%	*}
-  case "$sel" in
-    ''|NEW) $HARSH new ;;
-    *)      printf '%s\n' "$sel" ;;
+  _sel=${_choice%%	*}
+  case "${_sel}" in
+    ''|NEW) ${_harsh} new ;;
+    *)      printf '%s\n' "${_sel}" ;;
   esac
 }
 
 # ---------------------------------------------------------------------------
 # main loop
 # ---------------------------------------------------------------------------
-sess=${1:-}
-if [ -z "$sess" ]; then
+_sess=${1:-}
+if [ -z "${_sess}" ]; then
   # No session given: offer to resume a previous conversation (fzf picker),
   # falling back to a fresh session when none exist or fzf is unavailable.
-  sess=$(pick_session)
+  _sess=$(pick_session)
 fi
-dir=$($HARSH path "$sess")
-[ -d "$dir" ] || dir=$($HARSH init "$sess")
+_dir=$(${_harsh} path "${_sess}")
+[ -d "${_dir}" ] || _dir=$(${_harsh} init "${_sess}")
 
 if [ -z "${HARSH_API_KEY:-}${ANTHROPIC_API_KEY:-}" ] && [ -z "${HARSH_MOCK:-}" ]; then
-  warned_no_key=1
+  _warned_no_key=1
 else
-  warned_no_key=0
+  _warned_no_key=0
 fi
 
-redraw "$dir"
-[ "$warned_no_key" = 1 ] && \
-  printf '%s! No API key set — export ANTHROPIC_API_KEY or set HARSH_MOCK=1.%s\n' "$C_DIM" "$C_RST"
+redraw "${_dir}"
+[ "${_warned_no_key}" = 1 ] && \
+  printf '%s! No API key set — export ANTHROPIC_API_KEY or set HARSH_MOCK=1.%s\n' "${C_DIM}" "${C_RST}"
 
 while :; do
-  printf '%s› %s' "$C_USER" "$C_RST"
-  IFS= read -r line || { echo; break; }
-  case "$line" in
+  printf '%s› %s' "${C_USER}" "${C_RST}"
+  IFS= read -r _line || { echo; break; }
+  case "${_line}" in
     '') continue ;;
     /quit|/exit|/q) break ;;
     /help)
@@ -295,55 +292,55 @@ harsh TUI
   /new             fresh session;  /quit or Ctrl-D  quit
 EOF
       printf '\nCommands (type as /NAME — SESSION is filled in automatically):\n'
-      $HARSH commands repl | sed 's/^/  \//'
-      printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
-      redraw "$dir"; continue ;;
-    /show|/redraw) redraw "$dir"; continue ;;
+      ${_harsh} commands repl | sed 's/^/  \//'
+      printf '\n%s[ press Enter to continue ]%s' "${C_DIM}" "${C_RST}"; read -r _ || true
+      redraw "${_dir}"; continue ;;
+    /show|/redraw) redraw "${_dir}"; continue ;;
     /verbose|/v)
       # Toggle full tool output. Exported so render_transcript (and the core, if
       # a turn runs) honors it; redraw reflects the change immediately.
       if [ -n "${HARSH_VERBOSE:-}" ]; then unset HARSH_VERBOSE; else export HARSH_VERBOSE=1; fi
-      redraw "$dir"; continue ;;
+      redraw "${_dir}"; continue ;;
     '/verbose '*|'/v '*)
       # Expand one entry by #SEQ without changing the mode.
-      $HARSH verbose "$sess" "${line#* }"
-      printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
-      redraw "$dir"; continue ;;
+      ${_harsh} verbose "${_sess}" "${_line#* }"
+      printf '\n%s[ press Enter to continue ]%s' "${C_DIM}" "${C_RST}"; read -r _ || true
+      redraw "${_dir}"; continue ;;
     /map|/outline)
-      jump=$(map "$sess")
-      if [ -n "$jump" ]; then redraw "$dir" "$jump"; else redraw "$dir"; fi
+      _jump=$(map "${_sess}")
+      if [ -n "${_jump}" ]; then redraw "${_dir}" "${_jump}"; else redraw "${_dir}"; fi
       continue ;;
-    /browse) browse "$sess"; redraw "$dir"; continue ;;
+    /browse) browse "${_sess}"; redraw "${_dir}"; continue ;;
     /sessions|/resume|/switch)
-      picked=$(pick_session)
-      [ -n "$picked" ] && { sess=$picked; dir=$($HARSH path "$sess"); }
-      redraw "$dir"; continue ;;
+      _picked=$(pick_session)
+      [ -n "${_picked}" ] && { _sess=${_picked}; _dir=$(${_harsh} path "${_sess}"); }
+      redraw "${_dir}"; continue ;;
     /new)
-      sess=$($HARSH new); dir=$($HARSH path "$sess"); redraw "$dir"; continue ;;
+      _sess=$(${_harsh} new); _dir=$(${_harsh} path "${_sess}"); redraw "${_dir}"; continue ;;
     /*)
       # Any commands/ verb is reachable as /NAME (session auto-filled when it
       # takes one); otherwise fall back to a skill of that name.
-      name=${line#/}; rest=""
-      case "$name" in *' '*) rest=${name#* }; name=${name%% *} ;; esac
-      name=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9_-')
-      cline=$($HARSH commands repl | grep -E "^$name([[:space:]]|$)" | head -n1)
-      if [ -n "$cline" ]; then
+      _name=${_line#/}; _rest=""
+      case "${_name}" in *' '*) _rest=${_name#* }; _name=${_name%% *} ;; esac
+      _name=$(printf '%s' "${_name}" | tr -cd 'A-Za-z0-9_-')
+      _cline=$(${_harsh} commands repl | grep -E "^${_name}([[:space:]]|$)" | head -n1)
+      if [ -n "${_cline}" ]; then
         # A repl-surfaced commands/ verb; fill in the session when it takes one.
-        case "$cline" in *SESSION*) sset=$sess ;; *) sset="" ;; esac
+        case "${_cline}" in *SESSION*) _sset=${_sess} ;; *) _sset="" ;; esac
         # shellcheck disable=SC2086  # sset/rest are intentionally split into args
-        $HARSH "$name" $sset $rest
-        printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
-      elif $HARSH commands | grep -qE "^$name([[:space:]]|$)"; then
+        ${_harsh} "${_name}" ${_sset} ${_rest}
+        printf '\n%s[ press Enter to continue ]%s' "${C_DIM}" "${C_RST}"; read -r _ || true
+      elif ${_harsh} commands | grep -qE "^${_name}([[:space:]]|$)"; then
         # Exists, but it's CLI-only (e.g. reads stdin) — not meaningful here.
-        printf '%s/%s is a CLI-only command (run: harsh.sh %s …)%s\n' "$C_DIM" "$name" "$name" "$C_RST"
-        printf '\n%s[ press Enter to continue ]%s' "$C_DIM" "$C_RST"; read -r _ || true
+        printf '%s/%s is a CLI-only command (run: harsh.sh %s …)%s\n' "${C_DIM}" "${_name}" "${_name}" "${C_RST}"
+        printf '\n%s[ press Enter to continue ]%s' "${C_DIM}" "${C_RST}"; read -r _ || true
       else
-        $HARSH skill "$sess" "$name" "$rest"
+        ${_harsh} skill "${_sess}" "${_name}" "${_rest}"
       fi
-      redraw "$dir"; continue ;;
+      redraw "${_dir}"; continue ;;
     *)
-      $HARSH send "$sess" "$line" && $HARSH run "$sess"
-      redraw "$dir"; continue ;;
+      ${_harsh} send "${_sess}" "${_line}" && ${_harsh} run "${_sess}"
+      redraw "${_dir}"; continue ;;
   esac
 done
-printf '%s[harsh] bye%s\n' "$C_DIM" "$C_RST"
+printf '%s[harsh] bye%s\n' "${C_DIM}" "${C_RST}"

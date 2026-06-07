@@ -8,7 +8,7 @@ set -u
 printf 'Session working directory: %s\n' "$(pwd)"
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   printf 'Git branch: %s\n' "$(git branch --show-current 2>/dev/null)"
-  changes=$(git status --short 2>/dev/null | head -n 20)
-  [ -n "$changes" ] && printf 'Uncommitted changes:\n%s\n' "$changes"
+  _changes=$(git status --short 2>/dev/null | head -n 20)
+  [ -n "${_changes}" ] && printf 'Uncommitted changes:\n%s\n' "${_changes}"
 fi
 exit 0

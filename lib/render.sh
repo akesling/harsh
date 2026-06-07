@@ -33,7 +33,7 @@ fi
 # Honor locale precedence — LC_ALL overrides LC_CTYPE overrides LANG — so a
 # forced `LC_ALL=C` is respected even when LANG is UTF-8.
 _loc=${LC_ALL:-${LC_CTYPE:-${LANG:-}}}
-case "$_loc" in
+case "${_loc}" in
   *[Uu][Tt][Ff]*) BULLET='•' ;;
   *) BULLET='*' ;;
 esac
@@ -42,7 +42,7 @@ unset _loc
 # Left-gutter glyph that ties every (possibly wrapped) line of an entry to its
 # speaker. Like BULLET it must be ASCII-safe outside a UTF-8 locale, since it is
 # fed to BSD sed. Kept here so REPL and TUI share one look.
-case "$BULLET" in
+case "${BULLET}" in
   '•') GUTTER='▌' ;;
   *)   GUTTER='|' ;;
 esac
@@ -51,7 +51,7 @@ esac
 # The body that follows should be piped through gutter() with the same color so
 # the whole entry reads as one block.
 speaker() {
-  printf '%s%s %s%s\n' "$2" "$GUTTER" "$1" "$C_RST"
+  printf '%s%s %s%s\n' "$2" "${GUTTER}" "$1" "${C_RST}"
 }
 
 # gutter COLOR [BODYCOLOR] — filter: prefix each input line with a colored
@@ -59,7 +59,7 @@ speaker() {
 # tool I/O). A no-op-ish passthrough that still adds the gutter when color off.
 gutter() {
   _g=$1; _b=${2:-}
-  if [ -n "$_b" ]; then
+  if [ -n "${_b}" ]; then
     sed "s/^/${_g}${GUTTER}${C_RST} ${_b}/;s/\$/${C_RST}/"
   else
     sed "s/^/${_g}${GUTTER}${C_RST} /"
@@ -72,7 +72,7 @@ gutter() {
 # body() for assistant prose (where it just adds noise).
 body() {
   _c=${1:-}
-  if [ -n "$_c" ]; then
+  if [ -n "${_c}" ]; then
     sed "s/^/  ${_c}/;s/\$/${C_RST}/"
   else
     sed 's/^/  /'
@@ -85,13 +85,13 @@ body() {
 # Falls back to the whole JSON (trimmed) for tools without a known key.
 tool_oneline() {
   _name=$1; _json=$2
-  _arg=$(printf '%s' "$_json" | jq -r '
+  _arg=$(printf '%s' "${_json}" | jq -r '
     .command // .path // .pattern // .file // .query //
     (to_entries | map("\(.key)=\(.value|tostring)") | join(" ")) // ""' 2>/dev/null)
   # Collapse whitespace/newlines and clip to keep it to a single tidy line.
-  _arg=$(printf '%s' "$_arg" | tr '\n' ' ' | cut -c1-60)
+  _arg=$(printf '%s' "${_arg}" | tr '\n' ' ' | cut -c1-60)
   printf '%s%s %s%s %s%s%s\n' \
-    "$C_TOOL" "$BULLET" "$_name" "$C_RST" "$C_DIM" "$_arg" "$C_RST"
+    "${C_TOOL}" "${BULLET}" "${_name}" "${C_RST}" "${C_DIM}" "${_arg}" "${C_RST}"
 }
 
 # render_assistant TEXT — an assistant prose block: a colored "harsh" header and
@@ -99,7 +99,7 @@ tool_oneline() {
 # sometimes emits an empty prose block alongside a tool call).
 render_assistant() {
   [ -n "$(printf '%s' "$1" | tr -d '[:space:]')" ] || return 0
-  printf '%sharsh%s\n' "$C_AI" "$C_RST"
+  printf '%sharsh%s\n' "${C_AI}" "${C_RST}"
   printf '%s' "$1" | fmt_markdown | body
   printf '\n'
 }
@@ -110,16 +110,16 @@ render_assistant() {
 # gutter-prefixed; errors cap at 8 lines with a "+N more" hint.
 render_tool_result() {
   _sum=$(tool_oneline "$2" "$3"); _out=$4; _err=$5
-  _n=$(printf '%s\n' "$_out" | wc -l | tr -d ' ')
-  printf '%s#%s%s ' "$C_DIM" "$1" "$C_RST"
-  printf '%s' "$_sum" | tr -d '\n'
-  if [ "$_err" = true ]; then
-    printf '%s → error%s\n' "$C_TOOL" "$C_RST"
-    printf '%s\n' "$_out" | head -n 8 | gutter "$C_GUT" "$C_RES"
-    [ "$_n" -gt 8 ] && printf '  %s… +%s more lines (/verbose #%s)%s\n' "$C_DIM" "$((_n - 8))" "$1" "$C_RST"
+  _n=$(printf '%s\n' "${_out}" | wc -l | tr -d ' ')
+  printf '%s#%s%s ' "${C_DIM}" "$1" "${C_RST}"
+  printf '%s' "${_sum}" | tr -d '\n'
+  if [ "${_err}" = true ]; then
+    printf '%s → error%s\n' "${C_TOOL}" "${C_RST}"
+    printf '%s\n' "${_out}" | head -n 8 | gutter "${C_GUT}" "${C_RES}"
+    [ "${_n}" -gt 8 ] && printf '  %s… +%s more lines (/verbose #%s)%s\n' "${C_DIM}" "$((_n - 8))" "$1" "${C_RST}"
   else
-    printf '%s → %s line%s%s\n' "$C_DIM" "$_n" "$( [ "$_n" = 1 ] || printf s )" "$C_RST"
-    [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "$_out" | gutter "$C_GUT" "$C_RES"
+    printf '%s → %s line%s%s\n' "${C_DIM}" "${_n}" "$( [ "${_n}" = 1 ] || printf s )" "${C_RST}"
+    [ -n "${HARSH_VERBOSE:-}" ] && printf '%s\n' "${_out}" | gutter "${C_GUT}" "${C_RES}"
   fi
   return 0
 }
@@ -131,24 +131,24 @@ render_tool_result() {
 # (``` ... ```) pass through verbatim in a code color with inline rules
 # suppressed, so snippets render faithfully. A no-op (cat) when color is off.
 fmt_markdown() {
-  [ -n "$C_RST" ] || { cat; return; }
-  in_code=0
-  while IFS= read -r ln || [ -n "$ln" ]; do
-    case "$ln" in
+  [ -n "${C_RST}" ] || { cat; return; }
+  _in_code=0
+  while IFS= read -r _ln || [ -n "${_ln}" ]; do
+    case "${_ln}" in
       '```'*)
-        in_code=$((1 - in_code))
-        printf '%s%s%s\n' "$C_DIM" "$ln" "$C_RST"
+        _in_code=$((1 - _in_code))
+        printf '%s%s%s\n' "${C_DIM}" "${_ln}" "${C_RST}"
         continue ;;
     esac
-    if [ "$in_code" = 1 ]; then
-      printf '%s%s%s\n' "$C_CODE" "$ln" "$C_RST"
+    if [ "${_in_code}" = 1 ]; then
+      printf '%s%s%s\n' "${C_CODE}" "${_ln}" "${C_RST}"
       continue
     fi
-    printf '%s\n' "$ln" | sed \
-      -e "s/^\(#\{1,6\}\) \(.*\)/$C_HEAD\1 \2$C_RST/" \
-      -e "s/^\([[:space:]]*\)[*-] /\1$C_TOOL$BULLET$C_RST /" \
-      -e "s/\`\([^\`]*\)\`/$C_CODE\1$C_RST/g" \
-      -e "s/\*\*\([^*]*\)\*\*/$C_BOLD\1$C_RST/g" \
-      -e "s/__\([^_]*\)__/$C_BOLD\1$C_RST/g"
+    printf '%s\n' "${_ln}" | sed \
+      -e "s/^\(#\{1,6\}\) \(.*\)/${C_HEAD}\1 \2${C_RST}/" \
+      -e "s/^\([[:space:]]*\)[*-] /\1${C_TOOL}${BULLET}${C_RST} /" \
+      -e "s/\`\([^\`]*\)\`/${C_CODE}\1${C_RST}/g" \
+      -e "s/\*\*\([^*]*\)\*\*/${C_BOLD}\1${C_RST}/g" \
+      -e "s/__\([^_]*\)__/${C_BOLD}\1${C_RST}/g"
   done
 }

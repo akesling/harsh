@@ -7,12 +7,12 @@ if [ "${1:-}" = --schema ]; then
 EOF
   exit 0
 fi
-input=$(cat)
-cmd=$(printf '%s' "$input" | jq -r '.command // empty')
-[ -n "$cmd" ] || { echo "error: missing 'command'"; exit 1; }
-to=$(printf '%s' "$input" | jq -r '.timeout // empty')
-if [ -n "$to" ] && command -v timeout >/dev/null 2>&1; then
-  timeout "$to" sh -c "$cmd" 2>&1
+_input=$(cat)
+_cmd=$(printf '%s' "${_input}" | jq -r '.command // empty')
+[ -n "${_cmd}" ] || { echo "error: missing 'command'"; exit 1; }
+_to=$(printf '%s' "${_input}" | jq -r '.timeout // empty')
+if [ -n "${_to}" ] && command -v timeout >/dev/null 2>&1; then
+  timeout "${_to}" sh -c "${_cmd}" 2>&1
 else
-  sh -c "$cmd" 2>&1
+  sh -c "${_cmd}" 2>&1
 fi

@@ -4,22 +4,22 @@
 set -u
 [ "${1:-}" = --describe ] && { printf 'verbose SESSION SEQ\tExpand one entry (#SEQ) in full — tool input/output.\n'; exit 0; }
 # shellcheck source=/dev/null
-. "$HARSH_LIB_DIR/render.sh"
-dir=$(sh "$HARSH_SELF" path "$1"); want=$2
-want=${want#\#}                       # tolerate a leading '#'
-case "$want" in *[!0-9]*|'') printf 'usage: verbose SESSION #SEQ\n' >&2; exit 1 ;; esac
-want=$(printf '%04d' "$want")         # normalize to the zero-padded filename form
-for f in "$dir/$want"-*.json; do
-  [ -e "$f" ] || { printf 'no such entry: #%s\n' "$want" >&2; exit 1; }
-  name=$(jq -r '.block.name // ""' "$f")
-  btype=$(jq -r '.block.type' "$f")
-  printf '%s#%s %s%s%s\n' "$C_DIM" "$want" "$btype" \
-    "$( [ -n "$name" ] && printf ' · %s' "$name" )" "$C_RST"
-  case "$btype" in
-    tool_use)    jq -r '.block.input | tojson' "$f" | gutter "$C_GUT" "$C_DIM" ;;
-    tool_result) jq -r '.block.content | tostring' "$f" | gutter "$C_GUT" "$C_RES" ;;
-    text)        jq -r '.block.text' "$f" | fmt_markdown | body ;;
-    *)           jq -r '.block | tojson' "$f" | gutter "$C_GUT" ;;
+. "${HARSH_LIB_DIR}/render.sh"
+_dir=$(sh "${HARSH_SELF}" path "$1"); _want=$2
+_want=${_want#\#}                       # tolerate a leading '#'
+case "${_want}" in *[!0-9]*|'') printf 'usage: verbose SESSION #SEQ\n' >&2; exit 1 ;; esac
+_want=$(printf '%04d' "${_want}")       # normalize to the zero-padded filename form
+for _f in "${_dir}/${_want}"-*.json; do
+  [ -e "${_f}" ] || { printf 'no such entry: #%s\n' "${_want}" >&2; exit 1; }
+  _name=$(jq -r '.block.name // ""' "${_f}")
+  _btype=$(jq -r '.block.type' "${_f}")
+  printf '%s#%s %s%s%s\n' "${C_DIM}" "${_want}" "${_btype}" \
+    "$( [ -n "${_name}" ] && printf ' · %s' "${_name}" )" "${C_RST}"
+  case "${_btype}" in
+    tool_use)    jq -r '.block.input | tojson' "${_f}" | gutter "${C_GUT}" "${C_DIM}" ;;
+    tool_result) jq -r '.block.content | tostring' "${_f}" | gutter "${C_GUT}" "${C_RES}" ;;
+    text)        jq -r '.block.text' "${_f}" | fmt_markdown | body ;;
+    *)           jq -r '.block | tojson' "${_f}" | gutter "${C_GUT}" ;;
   esac
   exit 0
 done

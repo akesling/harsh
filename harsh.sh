@@ -17,15 +17,15 @@ HARSH_VERSION=0.1.0
 # SELF_DIR locates the checkout (repo-local config, sibling scripts). Data
 # directories are NOT inferred from it — they come from the config.
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
-CONFIG_FILE=""
+_config_file=""
 
 # Presentation lives in lib/render.sh so the REPL and TUI share one look. It is
 # optional: when absent, these inert fallbacks keep harsh.sh fully usable on its
 # own — just without color or markdown. They cover only what harsh.sh calls
 # directly (the colors it prints, plus the two block renderers).
-if [ -f "$SELF_DIR/lib/render.sh" ]; then
+if [ -f "${SELF_DIR}/lib/render.sh" ]; then
   # shellcheck disable=SC1091
-  . "$SELF_DIR/lib/render.sh"
+  . "${SELF_DIR}/lib/render.sh"
 else
   C_DIM=; C_RST=; C_USER=; C_TOOL=; C_BAR=; GUTTER='|'
   render_assistant() {
@@ -51,39 +51,39 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 load_config() {
   export SELF_DIR   # so config files can reference it: HARSH_TOOLS_DIR="$SELF_DIR/tools"
-  cfg=${HARSH_CONFIG:-}
-  if [ -z "$cfg" ]; then
-    for c in ./harsh.conf "$SELF_DIR/harsh.conf" "$HOME/.config/harsh/harsh.conf"; do
-      [ -f "$c" ] && { cfg=$c; break; }
+  _cfg=${HARSH_CONFIG:-}
+  if [ -z "${_cfg}" ]; then
+    for _c in ./harsh.conf "${SELF_DIR}/harsh.conf" "${HOME}/.config/harsh/harsh.conf"; do
+      [ -f "${_c}" ] && { _cfg=${_c}; break; }
     done
   fi
-  if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+  if [ -n "${_cfg}" ] && [ -f "${_cfg}" ]; then
     # shellcheck disable=SC1090
-    . "$cfg"
-    CONFIG_FILE=$cfg
+    . "${_cfg}"
+    _config_file=${_cfg}
   fi
   : "${HARSH_MODEL:=claude-opus-4-8}"
   : "${HARSH_MAX_TOKENS:=4096}"
   : "${HARSH_API_URL:=https://api.anthropic.com/v1/messages}"
   : "${HARSH_API_VERSION:=2023-06-01}"
   # Data directories must be set explicitly (config or env) — never inferred.
-  for v in HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR; do
-    eval "val=\${$v:-}"
-    [ -n "$val" ] || die "$v is not set; define it in $cfg (see harsh.conf)"
+  for _v in HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR; do
+    eval "_val=\${${_v}:-}"
+    [ -n "${_val}" ] || die "${_v} is not set; define it in ${_cfg} (see harsh.conf)"
   done
   : "${HARSH_MAX_TURNS:=127}"
   # Hooks/commands/lib are optional; defaults sit next to harsh.sh. A missing
   # hooks or commands dir simply means none are installed.
-  : "${HARSH_HOOKS_DIR:=$SELF_DIR/hooks}"
-  : "${HARSH_COMMANDS_DIR:=$SELF_DIR/commands}"
-  : "${HARSH_LIB_DIR:=$SELF_DIR/lib}"
+  : "${HARSH_HOOKS_DIR:=${SELF_DIR}/hooks}"
+  : "${HARSH_COMMANDS_DIR:=${SELF_DIR}/commands}"
+  : "${HARSH_LIB_DIR:=${SELF_DIR}/lib}"
   : "${HARSH_SYSTEM_PROMPT:=You are harsh, a concise and capable coding agent operating through a portable shell harness. Use the provided tools to inspect and modify the project. Prefer small, verifiable steps. When done, stop.}"
   HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
   # Expose the harness path and resolved config to tool subprocesses, so a tool
   # (e.g. tools/agent.sh) can re-invoke harsh for a sub-session with the same
   # config. HARSH_CONFIG is pinned to the loaded file so children don't re-discover.
-  HARSH_SELF="$SELF_DIR/harsh.sh"
-  HARSH_CONFIG=$CONFIG_FILE
+  HARSH_SELF="${SELF_DIR}/harsh.sh"
+  HARSH_CONFIG=${_config_file}
   export HARSH_MODEL HARSH_MAX_TOKENS HARSH_API_URL HARSH_API_VERSION \
          HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR \
          HARSH_HOOKS_DIR HARSH_COMMANDS_DIR HARSH_LIB_DIR \
@@ -94,39 +94,39 @@ load_config() {
 
 # Resolve a session argument (a bare name -> under sessions dir; a path -> as is)
 session_dir() {
-  s=$1
-  case "$s" in
-    /*|./*|../*|*/*) printf '%s' "$s" ;;
-    *)              printf '%s/%s' "$HARSH_SESSIONS_DIR" "$s" ;;
+  _s=$1
+  case "${_s}" in
+    /*|./*|../*|*/*) printf '%s' "${_s}" ;;
+    *)              printf '%s/%s' "${HARSH_SESSIONS_DIR}" "${_s}" ;;
   esac
 }
 
 # Next zero-padded sequence number for a session directory.
 next_seq() {
-  dir=$1
-  n=0
-  for f in "$dir"/[0-9]*.json; do
-    [ -e "$f" ] && n=$((n + 1))
+  _dir=$1
+  _n=0
+  for _f in "${_dir}"/[0-9]*.json; do
+    [ -e "${_f}" ] && _n=$((_n + 1))
   done
-  printf '%04d' $((n + 1))
+  printf '%04d' $((_n + 1))
 }
 
 # Append a conversation entry: one file holding {role, block} plus a manifest line.
 #   add_entry DIR ROLE TYPE NAME BLOCK_JSON
 add_entry() {
-  dir=$1; role=$2; type=$3; name=$4; block=$5
-  seq=$(next_seq "$dir")
-  if [ -n "$name" ]; then
-    safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')
-    file="$seq-$role-$type-$safe.json"
+  _dir=$1; _role=$2; _type=$3; _name=$4; _block=$5
+  _seq=$(next_seq "${_dir}")
+  if [ -n "${_name}" ]; then
+    _safe=$(printf '%s' "${_name}" | tr -c 'A-Za-z0-9_.-' '_')
+    _file="${_seq}-${_role}-${_type}-${_safe}.json"
   else
-    file="$seq-$role-$type.json"
+    _file="${_seq}-${_role}-${_type}.json"
   fi
-  jq -nc --arg role "$role" --argjson block "$block" '{role:$role,block:$block}' \
-    > "$dir/$file" || die "failed to write entry (invalid block json)"
-  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  printf '%s,%s,%s,%s,%s,%s,%s\n' "$seq" "$role" "$type" "$name" "$file" "$ts" "ok" \
-    >> "$dir/manifest.csv"
+  jq -nc --arg role "${_role}" --argjson block "${_block}" '{role:$role,block:$block}' \
+    > "${_dir}/${_file}" || die "failed to write entry (invalid block json)"
+  _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '%s,%s,%s,%s,%s,%s,%s\n' "${_seq}" "${_role}" "${_type}" "${_name}" "${_file}" "${_ts}" "ok" \
+    >> "${_dir}/manifest.csv"
 }
 
 # run_hooks EVENT PAYLOAD_JSON [TOOL] — feed PAYLOAD_JSON on stdin to each *.sh
@@ -135,25 +135,25 @@ add_entry() {
 # reason; stops and returns 2); 0 = allow (stdout collected as context); other =
 # error, logged to hooks.log and ignored. On allow, prints the context, returns 0.
 run_hooks() {
-  event=$1; payload=$2; tool=${3:-}
-  base="$HARSH_HOOKS_DIR/$event"
-  ctx=""
-  mkdir -p "$HARSH_LOG_DIR" 2>/dev/null || true
+  _event=$1; _payload=$2; _tool=${3:-}
+  _base="${HARSH_HOOKS_DIR}/${_event}"
+  _ctx=""
+  mkdir -p "${HARSH_LOG_DIR}" 2>/dev/null || true
   # Scan the event dir (runs for everything), then the tool-specific subdir.
-  for d in "$base" "${tool:+$base/$tool}"; do
-    [ -n "$d" ] && [ -d "$d" ] || continue
-    for h in "$d"/*.sh; do
-      [ -f "$h" ] || continue
-      out=$(printf '%s' "$payload" | sh "$h" 2>>"$HARSH_LOG_DIR/hooks.log"); rc=$?
-      case $rc in
-        0) [ -n "$out" ] && ctx="$ctx$out
+  for _d in "${_base}" "${_tool:+${_base}/${_tool}}"; do
+    [ -n "${_d}" ] && [ -d "${_d}" ] || continue
+    for _h in "${_d}"/*.sh; do
+      [ -f "${_h}" ] || continue
+      _out=$(printf '%s' "${_payload}" | sh "${_h}" 2>>"${HARSH_LOG_DIR}/hooks.log"); _rc=$?
+      case ${_rc} in
+        0) [ -n "${_out}" ] && _ctx="${_ctx}${_out}
 " ;;
-        2) printf '%s' "$out"; return 2 ;;
-        *) warn "[hook] $event/$(basename "$h") exited $rc (ignored)" ;;
+        2) printf '%s' "${_out}"; return 2 ;;
+        *) warn "[hook] ${_event}/$(basename "${_h}") exited ${_rc} (ignored)" ;;
       esac
     done
   done
-  printf '%s' "$ctx"
+  printf '%s' "${_ctx}"
   return 0
 }
 
@@ -163,32 +163,32 @@ run_hooks() {
 # there — placement is the declaration, the same way hooks narrow scope with a
 # subdirectory. Names are sanitized to forbid path traversal.
 resolve_command() {
-  surface=$1
-  safe=$(printf '%s' "$2" | tr -cd 'A-Za-z0-9_-')
-  [ -n "$safe" ] || return 1
-  for p in "$HARSH_COMMANDS_DIR/$safe.sh" "$HARSH_COMMANDS_DIR/$surface/$safe.sh"; do
-    [ -f "$p" ] && { printf '%s' "$p"; return 0; }
+  _surface=$1
+  _safe=$(printf '%s' "$2" | tr -cd 'A-Za-z0-9_-')
+  [ -n "${_safe}" ] || return 1
+  for _p in "${HARSH_COMMANDS_DIR}/${_safe}.sh" "${HARSH_COMMANDS_DIR}/${_surface}/${_safe}.sh"; do
+    [ -f "${_p}" ] && { printf '%s' "${_p}"; return 0; }
   done
   return 1
 }
 
 # Run a command on the repl surface (top level + repl/). REPL convenience.
 run_command() {
-  p=$(resolve_command repl "$1") || return 127
+  _p=$(resolve_command repl "$1") || return 127
   shift
-  sh "$p" "$@"
+  sh "${_p}" "$@"
 }
 
 # Print "NAME<TAB>description" (via --describe) for the top level plus the SURFACE
 # subdir. Default cli — the CLI sees top-level + cli/ commands; pass repl for the
 # REPL/TUI set (top-level + repl/).
 list_commands() {
-  surface=${1:-cli}
-  for d in "$HARSH_COMMANDS_DIR" "$HARSH_COMMANDS_DIR/$surface"; do
-    [ -d "$d" ] || continue
-    for c in "$d"/*.sh; do
-      [ -f "$c" ] || continue
-      sh "$c" --describe 2>/dev/null || printf '%s\t(no description)\n' "$(basename "$c" .sh)"
+  _surface=${1:-cli}
+  for _d in "${HARSH_COMMANDS_DIR}" "${HARSH_COMMANDS_DIR}/${_surface}"; do
+    [ -d "${_d}" ] || continue
+    for _c in "${_d}"/*.sh; do
+      [ -f "${_c}" ] || continue
+      sh "${_c}" --describe 2>/dev/null || printf '%s\t(no description)\n' "$(basename "${_c}" .sh)"
     done
   done
 }
@@ -204,46 +204,46 @@ command_wants_session() {
 # commands (engine primitives; derived commands live in $HARSH_COMMANDS_DIR)
 # ---------------------------------------------------------------------------
 cmd_init() {
-  name=${1:-sess-$(date -u +%Y%m%d-%H%M%S)}
-  dir=$(session_dir "$name")
-  fresh=0
-  [ -d "$dir" ] || fresh=1
-  mkdir -p "$dir"
-  [ -f "$dir/manifest.csv" ] || : > "$dir/manifest.csv"
+  _name=${1:-sess-$(date -u +%Y%m%d-%H%M%S)}
+  _dir=$(session_dir "${_name}")
+  _fresh=0
+  [ -d "${_dir}" ] || _fresh=1
+  mkdir -p "${_dir}"
+  [ -f "${_dir}/manifest.csv" ] || : > "${_dir}/manifest.csv"
   # SessionStart fires once per new session. Its output (if any) is injected as
   # opening context — captured here so it never reaches stdout, which is the
   # session directory path the callers consume.
-  if [ "$fresh" = 1 ]; then
-    hp=$(jq -nc --arg e SessionStart --arg s "$dir" '{event:$e,session_dir:$s}')
-    hc=$(run_hooks SessionStart "$hp") || true
-    [ -n "$hc" ] && add_entry "$dir" user text "" "$(jq -nc --arg t "$hc" '{type:"text",text:$t}')"
+  if [ "${_fresh}" = 1 ]; then
+    _hp=$(jq -nc --arg e SessionStart --arg s "${_dir}" '{event:$e,session_dir:$s}')
+    _hc=$(run_hooks SessionStart "${_hp}") || true
+    [ -n "${_hc}" ] && add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')"
   fi
-  printf '%s\n' "$dir"
+  printf '%s\n' "${_dir}"
 }
 
 cmd_path() { session_dir "$1"; }
 
 cmd_send() {
-  dir=$(session_dir "$1"); shift; text=$*
-  [ -d "$dir" ] || die "no such session: $dir (run: harsh.sh init)"
+  _dir=$(session_dir "$1"); shift; _text=$*
+  [ -d "${_dir}" ] || die "no such session: ${_dir} (run: harsh.sh init)"
   # UserPromptSubmit — a hook may reject the prompt (exit 2) or emit context that
   # is injected just before it (consecutive user blocks merge into one message).
-  hp=$(jq -nc --arg e UserPromptSubmit --arg s "$dir" --arg p "$text" \
+  _hp=$(jq -nc --arg e UserPromptSubmit --arg s "${_dir}" --arg p "${_text}" \
         '{event:$e,session_dir:$s,prompt:$p}')
-  if ! hc=$(run_hooks UserPromptSubmit "$hp"); then
-    warn "[blocked] prompt rejected by hook: $hc"
+  if ! _hc=$(run_hooks UserPromptSubmit "${_hp}"); then
+    warn "[blocked] prompt rejected by hook: ${_hc}"
     return 1
   fi
-  [ -n "$hc" ] && add_entry "$dir" user text "" "$(jq -nc --arg t "$hc" '{type:"text",text:$t}')"
-  block=$(jq -nc --arg t "$text" '{type:"text",text:$t}')
-  add_entry "$dir" user text "" "$block"
+  [ -n "${_hc}" ] && add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')"
+  _block=$(jq -nc --arg t "${_text}" '{type:"text",text:$t}')
+  add_entry "${_dir}" user text "" "${_block}"
 }
 
 # Assemble the conversation files into a Messages-API `messages` array by
 # grouping consecutive same-role blocks into one message.
 cmd_assemble() {
-  dir=$(session_dir "$1")
-  set -- "$dir"/[0-9]*.json
+  _dir=$(session_dir "$1")
+  set -- "${_dir}"/[0-9]*.json
   [ -e "$1" ] || { printf '[]'; return 0; }
   jq -s 'reduce .[] as $e ([];
       if (length > 0) and (.[-1].role == $e.role)
@@ -254,48 +254,48 @@ cmd_assemble() {
 
 # Call the model. Honors HARSH_MOCK for offline smoke testing.
 call_api() {
-  req=$1; dir=$2
-  mkdir -p "$HARSH_LOG_DIR"
-  base=$(basename "$dir")
-  printf '%s\n' "$req" >> "$HARSH_LOG_DIR/$base.request.log"
+  _req=$1; _dir=$2
+  mkdir -p "${HARSH_LOG_DIR}"
+  _base=$(basename "${_dir}")
+  printf '%s\n' "${_req}" >> "${HARSH_LOG_DIR}/${_base}.request.log"
   if [ -n "${HARSH_MOCK:-}" ]; then
-    resp=$(mock_api "$req")
-    printf '%s\n' "$resp" >> "$HARSH_LOG_DIR/$base.response.log"
-    printf '%s' "$resp"
+    _resp=$(mock_api "${_req}")
+    printf '%s\n' "${_resp}" >> "${HARSH_LOG_DIR}/${_base}.response.log"
+    printf '%s' "${_resp}"
     return 0
   fi
-  [ -n "$HARSH_API_KEY" ] || {
+  [ -n "${HARSH_API_KEY}" ] || {
     warn "[error] no API key set — export ANTHROPIC_API_KEY (or HARSH_API_KEY), or set HARSH_MOCK=1 for offline testing."
     return 1
   }
-  resp=$(printf '%s' "$req" | curl -sS -X POST "$HARSH_API_URL" \
-      -H "x-api-key: $HARSH_API_KEY" \
-      -H "anthropic-version: $HARSH_API_VERSION" \
+  _resp=$(printf '%s' "${_req}" | curl -sS -X POST "${HARSH_API_URL}" \
+      -H "x-api-key: ${HARSH_API_KEY}" \
+      -H "anthropic-version: ${HARSH_API_VERSION}" \
       -H "content-type: application/json" \
-      --data-binary @-) || { warn "[error] curl request to $HARSH_API_URL failed"; return 1; }
-  printf '%s\n' "$resp" >> "$HARSH_LOG_DIR/$base.response.log"
-  printf '%s' "$resp"
+      --data-binary @-) || { warn "[error] curl request to ${HARSH_API_URL} failed"; return 1; }
+  printf '%s\n' "${_resp}" >> "${HARSH_LOG_DIR}/${_base}.response.log"
+  printf '%s' "${_resp}"
 }
 
 # Offline mock model: echoes text, or emits a tool call when the last user
 # message contains a [[tool:NAME:ARG]] marker. Lets the loop be smoke-tested.
 mock_api() {
-  req=$1
-  last=$(printf '%s' "$req" | jq -r '
+  _req=$1
+  _last=$(printf '%s' "${_req}" | jq -r '
     [.messages[] | select(.role=="user")] | (.[-1].content // []) |
     if type=="array" then (map(select(.type=="text").text) | join(" ")) else (.|tostring) end')
-  case "$last" in
+  case "${_last}" in
     *'[[tool:'*']]'*)
-      spec=${last#*'[[tool:'}; spec=${spec%%']]'*}
-      tname=${spec%%:*}; targs=${spec#*:}
-      jq -n --arg n "$tname" --arg a "$targs" '{
+      _spec=${_last#*'[[tool:'}; _spec=${_spec%%']]'*}
+      _tname=${_spec%%:*}; _targs=${_spec#*:}
+      jq -n --arg n "${_tname}" --arg a "${_targs}" '{
         content:[
           {type:"text",text:("Calling tool " + $n)},
           {type:"tool_use",id:"toolu_mock1",name:$n,
            input:{command:$a,path:$a,pattern:$a,name:$a}}],
         stop_reason:"tool_use"}' ;;
     *)
-      jq -n --arg t "[mock] You said: $last" '{content:[{type:"text",text:$t}],stop_reason:"end_turn"}' ;;
+      jq -n --arg t "[mock] You said: ${_last}" '{content:[{type:"text",text:$t}],stop_reason:"end_turn"}' ;;
   esac
 }
 
@@ -303,65 +303,65 @@ mock_api() {
 # them and appends tool_result blocks.
 # returns: 0 = finished, 2 = tool_use (caller should continue), 1 = error.
 cmd_step() {
-  dir=$(session_dir "$1")
-  [ -d "$dir" ] || die "no such session: $dir"
-  msgs=$(cmd_assemble "$1")
-  tools=$(sh "$HARSH_TOOLS_DIR/tool.sh" schemas 2>/dev/null); [ -n "$tools" ] || tools='[]'
-  req=$(jq -n --arg model "$HARSH_MODEL" --argjson max "$HARSH_MAX_TOKENS" \
-        --arg sys "$HARSH_SYSTEM_PROMPT" --argjson tools "$tools" --argjson msgs "$msgs" \
+  _dir=$(session_dir "$1")
+  [ -d "${_dir}" ] || die "no such session: ${_dir}"
+  _msgs=$(cmd_assemble "$1")
+  _tools=$(sh "${HARSH_TOOLS_DIR}/tool.sh" schemas 2>/dev/null); [ -n "${_tools}" ] || _tools='[]'
+  _req=$(jq -n --arg model "${HARSH_MODEL}" --argjson max "${HARSH_MAX_TOKENS}" \
+        --arg sys "${HARSH_SYSTEM_PROMPT}" --argjson tools "${_tools}" --argjson msgs "${_msgs}" \
         '{model:$model, max_tokens:$max, system:$sys, tools:$tools, messages:$msgs}')
-  resp=$(call_api "$req" "$dir") || return 1
+  _resp=$(call_api "${_req}" "${_dir}") || return 1
 
-  if [ "$(printf '%s' "$resp" | jq -r 'has("content")')" != "true" ]; then
-    emsg=$(printf '%s' "$resp" | jq -r '.error.message // .message // "unknown API error"')
-    warn "[error] $emsg"
+  if [ "$(printf '%s' "${_resp}" | jq -r 'has("content")')" != "true" ]; then
+    _emsg=$(printf '%s' "${_resp}" | jq -r '.error.message // .message // "unknown API error"')
+    warn "[error] ${_emsg}"
     return 1
   fi
 
-  n=$(printf '%s' "$resp" | jq '.content | length')
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    block=$(printf '%s' "$resp" | jq -c ".content[$i]")
-    btype=$(printf '%s' "$block" | jq -r '.type')
-    bname=$(printf '%s' "$block" | jq -r '.name // ""')
-    add_entry "$dir" assistant "$btype" "$bname" "$block"
+  _n=$(printf '%s' "${_resp}" | jq '.content | length')
+  _i=0
+  while [ "${_i}" -lt "${_n}" ]; do
+    _block=$(printf '%s' "${_resp}" | jq -c ".content[${_i}]")
+    _btype=$(printf '%s' "${_block}" | jq -r '.type')
+    _bname=$(printf '%s' "${_block}" | jq -r '.name // ""')
+    add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}"
     # Tool calls render with their result in the loop below; here, just prose.
-    case "$btype" in
-      text) [ -n "${HARSH_QUIET:-}" ] || render_assistant "$(printf '%s' "$block" | jq -r '.text')" ;;
+    case "${_btype}" in
+      text) [ -n "${HARSH_QUIET:-}" ] || render_assistant "$(printf '%s' "${_block}" | jq -r '.text')" ;;
     esac
-    i=$((i + 1))
+    _i=$((_i + 1))
   done
 
-  stop=$(printf '%s' "$resp" | jq -r '.stop_reason // ""')
-  if [ "$stop" = tool_use ]; then
-    printf '%s' "$resp" | jq -c '.content[] | select(.type=="tool_use")' | while IFS= read -r tu; do
-      id=$(printf '%s' "$tu"    | jq -r '.id')
-      name=$(printf '%s' "$tu"  | jq -r '.name')
-      input=$(printf '%s' "$tu" | jq -c '.input')
+  _stop=$(printf '%s' "${_resp}" | jq -r '.stop_reason // ""')
+  if [ "${_stop}" = tool_use ]; then
+    printf '%s' "${_resp}" | jq -c '.content[] | select(.type=="tool_use")' | while IFS= read -r _tu; do
+      _id=$(printf '%s' "${_tu}"    | jq -r '.id')
+      _name=$(printf '%s' "${_tu}"  | jq -r '.name')
+      _input=$(printf '%s' "${_tu}" | jq -c '.input')
       # PreToolUse — a hook may deny the call (exit 2); its reason is fed back to
       # the model as the (error) tool_result, and the tool is not run.
-      prepay=$(jq -nc --arg e PreToolUse --arg s "$dir" --arg n "$name" --argjson in "$input" \
+      _prepay=$(jq -nc --arg e PreToolUse --arg s "${_dir}" --arg n "${_name}" --argjson in "${_input}" \
                 '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in}')
-      if reason=$(run_hooks PreToolUse "$prepay" "$name"); then
-        out=$(printf '%s' "$input" | sh "$HARSH_TOOLS_DIR/tool.sh" call "$name" 2>&1); rc=$?
-        err=true; [ "$rc" -eq 0 ] && err=false
+      if _reason=$(run_hooks PreToolUse "${_prepay}" "${_name}"); then
+        _out=$(printf '%s' "${_input}" | sh "${HARSH_TOOLS_DIR}/tool.sh" call "${_name}" 2>&1); _rc=$?
+        _err=true; [ "${_rc}" -eq 0 ] && _err=false
         # PostToolUse — feedback (if any) is appended to the tool output.
-        postpay=$(jq -nc --arg e PostToolUse --arg s "$dir" --arg n "$name" \
-                  --argjson in "$input" --arg o "$out" --argjson er "$err" \
+        _postpay=$(jq -nc --arg e PostToolUse --arg s "${_dir}" --arg n "${_name}" \
+                  --argjson in "${_input}" --arg o "${_out}" --argjson er "${_err}" \
                   '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in,tool_output:$o,is_error:$er}')
-        fb=$(run_hooks PostToolUse "$postpay" "$name") || true
-        [ -n "$fb" ] && out="$out
-[hook] $fb"
+        _fb=$(run_hooks PostToolUse "${_postpay}" "${_name}") || true
+        [ -n "${_fb}" ] && _out="${_out}
+[hook] ${_fb}"
       else
-        say "${C_TOOL}⛔ $name blocked by hook:${C_RST} $reason"
-        out="Tool call blocked by hook: $reason"; err=true
+        say "${C_TOOL}⛔ ${_name} blocked by hook:${C_RST} ${_reason}"
+        _out="Tool call blocked by hook: ${_reason}"; _err=true
       fi
-      block=$(jq -nc --arg id "$id" --arg out "$out" --argjson e "$err" \
+      _block=$(jq -nc --arg id "${_id}" --arg out "${_out}" --argjson e "${_err}" \
         '{type:"tool_result", tool_use_id:$id, content:$out, is_error:$e}')
       # Capture the seq before the write — it's the #handle for `verbose`.
-      rseq=$(next_seq "$dir")
-      add_entry "$dir" user tool_result "$name" "$block"
-      [ -n "${HARSH_QUIET:-}" ] || render_tool_result "$rseq" "$name" "$input" "$out" "$err"
+      _rseq=$(next_seq "${_dir}")
+      add_entry "${_dir}" user tool_result "${_name}" "${_block}"
+      [ -n "${HARSH_QUIET:-}" ] || render_tool_result "${_rseq}" "${_name}" "${_input}" "${_out}" "${_err}"
     done
     return 2
   fi
@@ -370,24 +370,24 @@ cmd_step() {
 
 # Run the agent loop to completion (or HARSH_MAX_TURNS).
 cmd_run() {
-  sess=$1
-  dir=$(session_dir "$sess")
-  turns=0; stops=0
-  while [ "$turns" -lt "$HARSH_MAX_TURNS" ]; do
-    cmd_step "$sess"; rc=$?
-    turns=$((turns + 1))
-    case $rc in
+  _sess=$1
+  _dir=$(session_dir "${_sess}")
+  _turns=0; _stops=0
+  while [ "${_turns}" -lt "${HARSH_MAX_TURNS}" ]; do
+    cmd_step "${_sess}"; _rc=$?
+    _turns=$((_turns + 1))
+    case ${_rc} in
       0)
         # Stop — a hook may force another turn (exit 2) by injecting a message,
         # up to a small cap so it can't loop forever.
-        if [ "$stops" -lt 3 ]; then
-          sp=$(jq -nc --arg e Stop --arg s "$dir" '{event:$e,session_dir:$s}')
-          if reason=$(run_hooks Stop "$sp"); then
+        if [ "${_stops}" -lt 3 ]; then
+          _sp=$(jq -nc --arg e Stop --arg s "${_dir}" '{event:$e,session_dir:$s}')
+          if _reason=$(run_hooks Stop "${_sp}"); then
             return 0
           fi
-          stops=$((stops + 1))
-          say "${C_DIM}↻ continuing (Stop hook):${C_RST} $reason"
-          add_entry "$dir" user text "" "$(jq -nc --arg t "$reason" '{type:"text",text:$t}')"
+          _stops=$((_stops + 1))
+          say "${C_DIM}↻ continuing (Stop hook):${C_RST} ${_reason}"
+          add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_reason}" '{type:"text",text:$t}')"
           continue
         fi
         return 0 ;;
@@ -395,27 +395,27 @@ cmd_run() {
       *) return 1 ;;
     esac
   done
-  say "[harsh] reached max turns ($HARSH_MAX_TURNS)"
+  say "[harsh] reached max turns (${HARSH_MAX_TURNS})"
 }
 
 # Send a user message then run to completion.
 cmd_ask() {
-  sess=$1; shift
-  cmd_send "$sess" "$*" && cmd_run "$sess"
+  _sess=$1; shift
+  cmd_send "${_sess}" "$*" && cmd_run "${_sess}"
 }
 
 # Invoke a skill: load its instructions via the Skills tool, inject as a user
 # message, and run. Backs slash commands in the TUI.
 cmd_skill() {
-  sess=$1; name=$2; shift 2 2>/dev/null || shift $#
-  args=$*
-  input=$(jq -nc --arg n "$name" --arg a "$args" '{name:$n,args:$a}')
-  if ! content=$(printf '%s' "$input" | sh "$HARSH_TOOLS_DIR/tool.sh" call skills); then
-    say "skill not found: $name"
+  _sess=$1; _name=$2; shift 2 2>/dev/null || shift $#
+  _args=$*
+  _input=$(jq -nc --arg n "${_name}" --arg a "${_args}" '{name:$n,args:$a}')
+  if ! _content=$(printf '%s' "${_input}" | sh "${HARSH_TOOLS_DIR}/tool.sh" call skills); then
+    say "skill not found: ${_name}"
     return 1
   fi
-  msg=$(printf 'Please follow the "%s" skill below. Arguments: %s\n\n%s' "$name" "$args" "$content")
-  cmd_send "$sess" "$msg" && cmd_run "$sess"
+  _msg=$(printf 'Please follow the "%s" skill below. Arguments: %s\n\n%s' "${_name}" "${_args}" "${_content}")
+  cmd_send "${_sess}" "${_msg}" && cmd_run "${_sess}"
 }
 
 repl_help() {
@@ -438,92 +438,92 @@ EOF
 # is the richer fzf interface; this needs nothing beyond the core.)
 cmd_repl() {
   if [ "${1:-}" != "" ]; then
-    sess=$1
-    dir=$(session_dir "$sess")
-    [ -d "$dir" ] || dir=$(cmd_init "$sess")
-    sess=$dir
+    _sess=$1
+    _dir=$(session_dir "${_sess}")
+    [ -d "${_dir}" ] || _dir=$(cmd_init "${_sess}")
+    _sess=${_dir}
   else
-    dir=$(cmd_init); sess=$dir
+    _dir=$(cmd_init); _sess=${_dir}
   fi
-  tty=0; [ -t 0 ] && tty=1
-  if [ "$tty" = 1 ]; then
-    printf '%s╶─ harsh %s · REPL · %s ─╴%s\n' "$C_BAR" "$HARSH_VERSION" "$sess" "$C_RST" >&2
-    printf '%sType a message and press Enter. /help for commands, /quit to exit.%s\n' "$C_DIM" "$C_RST" >&2
-    if [ -z "$HARSH_API_KEY" ] && [ -z "${HARSH_MOCK:-}" ]; then
+  _tty=0; [ -t 0 ] && _tty=1
+  if [ "${_tty}" = 1 ]; then
+    printf '%s╶─ harsh %s · REPL · %s ─╴%s\n' "${C_BAR}" "${HARSH_VERSION}" "${_sess}" "${C_RST}" >&2
+    printf '%sType a message and press Enter. /help for commands, /quit to exit.%s\n' "${C_DIM}" "${C_RST}" >&2
+    if [ -z "${HARSH_API_KEY}" ] && [ -z "${HARSH_MOCK:-}" ]; then
       printf '! No API key set — the agent cannot respond. Export ANTHROPIC_API_KEY,\n' >&2
       printf '! or set HARSH_MOCK=1 for an offline mock model.\n' >&2
     fi
   fi
   while :; do
-    [ "$tty" = 1 ] && printf '%sharsh>%s ' "$C_USER" "$C_RST" >&2
-    IFS= read -r line || break
-    case "$line" in
+    [ "${_tty}" = 1 ] && printf '%sharsh>%s ' "${C_USER}" "${C_RST}" >&2
+    IFS= read -r _line || break
+    case "${_line}" in
       '') continue ;;
       /quit|/exit|/q) break ;;
       /help)    repl_help >&2 ;;
       /verbose|/v)
         # No arg: toggle global verbose (every tool result prints in full).
         if [ -n "${HARSH_VERBOSE:-}" ]; then
-          HARSH_VERBOSE=; printf '%s[verbose off]%s\n' "$C_DIM" "$C_RST" >&2
+          HARSH_VERBOSE=; printf '%s[verbose off]%s\n' "${C_DIM}" "${C_RST}" >&2
         else
-          HARSH_VERBOSE=1; printf '%s[verbose on]%s\n' "$C_DIM" "$C_RST" >&2
+          HARSH_VERBOSE=1; printf '%s[verbose on]%s\n' "${C_DIM}" "${C_RST}" >&2
         fi ;;
       '/verbose '*|'/v '*)
         # With a #SEQ arg: expand that one entry without changing the mode.
-        run_command verbose "$sess" "${line#* }" ;;
-      /session) printf '%s\n' "$dir" ;;
+        run_command verbose "${_sess}" "${_line#* }" ;;
+      /session) printf '%s\n' "${_dir}" ;;
       /sessions|/ls)
         # NAME<TAB>LABEL → an indented, readable list.
         run_command sessions | sed 's/^/  /' >&2
-        [ "$tty" = 1 ] && printf '%sUse /resume <ID> to switch.%s\n' "$C_DIM" "$C_RST" >&2 ;;
+        [ "${_tty}" = 1 ] && printf '%sUse /resume <ID> to switch.%s\n' "${C_DIM}" "${C_RST}" >&2 ;;
       '/resume '*|'/switch '*)
-        target=${line#* }
-        tdir=$(session_dir "$target")
-        if [ -d "$tdir" ] && [ -f "$tdir/manifest.csv" ]; then
-          dir=$tdir; sess=$dir
-          [ "$tty" = 1 ] && printf '%s[resumed: %s]%s\n' "$C_DIM" "$sess" "$C_RST" >&2
-          run_command show "$sess"
+        _target=${_line#* }
+        _tdir=$(session_dir "${_target}")
+        if [ -d "${_tdir}" ] && [ -f "${_tdir}/manifest.csv" ]; then
+          _dir=${_tdir}; _sess=${_dir}
+          [ "${_tty}" = 1 ] && printf '%s[resumed: %s]%s\n' "${C_DIM}" "${_sess}" "${C_RST}" >&2
+          run_command show "${_sess}"
         else
-          printf 'no such session: %s\n' "$target" >&2
+          printf 'no such session: %s\n' "${_target}" >&2
         fi ;;
       /resume|/switch)
         printf 'usage: /resume <session ID>  (see /sessions)\n' >&2 ;;
       /new)
-        dir=$(cmd_init); sess=$dir
-        [ "$tty" = 1 ] && printf '[new session: %s]\n' "$sess" >&2 ;;
+        _dir=$(cmd_init); _sess=${_dir}
+        [ "${_tty}" = 1 ] && printf '[new session: %s]\n' "${_sess}" >&2 ;;
       /*)
         # Any commands/ verb is reachable as /NAME; the current session is filled
         # in for session-scoped ones. Otherwise fall back to a skill of that name.
-        name=${line#/}; rest=""
-        case "$name" in *' '*) rest=${name#* }; name=${name%% *} ;; esac
-        if p=$(resolve_command repl "$name"); then
-          if command_wants_session "$p"; then
+        _name=${_line#/}; _rest=""
+        case "${_name}" in *' '*) _rest=${_name#* }; _name=${_name%% *} ;; esac
+        if _p=$(resolve_command repl "${_name}"); then
+          if command_wants_session "${_p}"; then
             # shellcheck disable=SC2086  # split rest into positional args
-            sh "$p" "$sess" $rest
+            sh "${_p}" "${_sess}" ${_rest}
           else
             # shellcheck disable=SC2086
-            sh "$p" $rest
+            sh "${_p}" ${_rest}
           fi
-        elif resolve_command cli "$name" >/dev/null 2>&1; then
+        elif resolve_command cli "${_name}" >/dev/null 2>&1; then
           printf '%s/%s is a CLI-only command — run: harsh.sh %s …%s\n' \
-            "$C_DIM" "$name" "$name" "$C_RST" >&2
+            "${C_DIM}" "${_name}" "${_name}" "${C_RST}" >&2
         else
-          cmd_skill "$sess" "$name" "$rest"
+          cmd_skill "${_sess}" "${_name}" "${_rest}"
         fi ;;
       *)
         # No prompt echo: the user just typed it at the "harsh>" line directly
         # above, so repeating it only adds noise. A blank line sets the reply off.
-        [ "$tty" = 1 ] && printf '\n' >&2
-        cmd_send "$sess" "$line" && cmd_run "$sess" ;;
+        [ "${_tty}" = 1 ] && printf '\n' >&2
+        cmd_send "${_sess}" "${_line}" && cmd_run "${_sess}" ;;
     esac
   done
-  [ "$tty" = 1 ] && printf '%s%s harsh · bye%s\n' "$C_DIM" "$GUTTER" "$C_RST" >&2
+  [ "${_tty}" = 1 ] && printf '%s%s harsh · bye%s\n' "${C_DIM}" "${GUTTER}" "${C_RST}" >&2
   return 0
 }
 
 usage() {
   cat <<EOF
-harsh $HARSH_VERSION — a portable shell agent harness
+harsh ${HARSH_VERSION} — a portable shell agent harness
 
 Usage: harsh.sh [-c CONFIG] [-q] [COMMAND [ARGS...]]
 
@@ -571,11 +571,11 @@ while [ $# -gt 0 ]; do
 done
 load_config
 
-cmd=${1:-repl}; [ $# -gt 0 ] && shift
-case "$cmd" in
+_cmd=${1:-repl}; [ $# -gt 0 ] && shift
+case "${_cmd}" in
   # --- engine primitives (in-process; reserved, never shadowed) -------------
   repl)     cmd_repl "$@" ;;
-  tui)      exec sh "$SELF_DIR/harsh_tui.sh" "$@" ;;
+  tui)      exec sh "${SELF_DIR}/harsh_tui.sh" "$@" ;;
   init|new) cmd_init "$@" ;;
   send)     cmd_send "$@" ;;
   step)     cmd_step "$@" ;;
@@ -589,8 +589,8 @@ case "$cmd" in
   help|-h|--help) usage ;;
   # --- everything else: an extensible command from $HARSH_COMMANDS_DIR ------
   *)
-    if p=$(resolve_command cli "$cmd"); then
-      exec sh "$p" "$@"
+    if _p=$(resolve_command cli "${_cmd}"); then
+      exec sh "${_p}" "$@"
     fi
-    die "unknown command: $cmd (try: harsh.sh help)" ;;
+    die "unknown command: ${_cmd} (try: harsh.sh help)" ;;
 esac

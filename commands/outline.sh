@@ -3,14 +3,14 @@
 # Output TSV: SEQ<TAB>PROMPT<TAB>SUMMARY. jq-only; works under HARSH_MOCK.
 set -u
 [ "${1:-}" = --describe ] && { printf 'outline SESSION\tPrint a prompt-by-prompt outline: SEQ<TAB>PROMPT<TAB>SUMMARY.\n'; exit 0; }
-dir=$(sh "$HARSH_SELF" path "$1")
-set -- "$dir"/[0-9]*.json
+_dir=$(sh "${HARSH_SELF}" path "$1")
+set -- "${_dir}"/[0-9]*.json
 [ -e "$1" ] || exit 0
 # Tag each entry with its sequence (the filename prefix), then fold the blocks
 # after each user/text prompt into that prompt's row.
-for f in "$@"; do
-  seq=$(basename "$f"); seq=${seq%%-*}
-  jq -c --arg seq "$seq" '{seq:$seq, role:.role, block:.block}' "$f"
+for _f in "$@"; do
+  _seq=$(basename "${_f}"); _seq=${_seq%%-*}
+  jq -c --arg seq "${_seq}" '{seq:$seq, role:.role, block:.block}' "${_f}"
 done | jq -rs '
   reduce .[] as $e ([];
     if ($e.role=="user" and $e.block.type=="text")
