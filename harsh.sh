@@ -227,7 +227,8 @@ cmd_init() {
   if [ "${_fresh}" = 1 ]; then
     _hp=$(jq -nc --arg e SessionStart --arg s "${_dir}" '{event:$e,session_dir:$s}')
     _hc=$(run_hooks SessionStart "${_hp}") || true
-    [ -n "${_hc}" ] && add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')"
+    [ -n "${_hc}" ] && add_entry "${_dir}" user text "" \
+      "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')" '{"context":"SessionStart"}'
   fi
   printf '%s\n' "${_dir}"
 }
@@ -483,6 +484,26 @@ EOF
   list_commands repl | sort | sed 's/^/  \//'
 }
 
+# repl_sessions CURRENT — show `sessions` (NAME<TAB>LABEL) in the REPL. The LABEL
+# is already formatted by commands/sessions.sh; here we only add a left margin,
+# mark the current session with a caret, and trail the resume ID dimmed.
+repl_sessions() {
+  _cur=$(basename "${1:-}")
+  _rows=$(run_command sessions)
+  if [ -z "${_rows}" ]; then
+    printf '%s  (no sessions yet)%s\n' "${C_DIM}" "${C_RST}" >&2
+    return 0
+  fi
+  # Column header, aligned to the label fields built by commands/sessions.sh:
+  # "<mark> <MM-DD HH:MM(11)> <TURNS(4)>  <TOPIC>  <SESSION ID>".
+  printf '%s  %-11s %4s  %-56s%s%s\n' \
+    "${C_BOLD}" 'STARTED' 'TRNS' 'TOPIC' 'SESSION' "${C_RST}" >&2
+  printf '%s\n' "${_rows}" | while IFS='	' read -r _n _label; do
+    if [ "${_n}" = "${_cur}" ]; then _mark="${C_USER}▸${C_RST}"; else _mark=' '; fi
+    printf '%s %s  %s%s%s\n' "${_mark}" "${_label}" "${C_DIM}" "${_n}" "${C_RST}" >&2
+  done
+}
+
 # Default interactive mode: a dependency-free, line-based REPL. (harsh_tui.sh
 # is the richer fzf interface; this needs nothing beyond the core.)
 cmd_repl() {
@@ -522,8 +543,7 @@ cmd_repl() {
         run_command verbose "${_sess}" "${_line#* }" ;;
       /session) printf '%s\n' "${_dir}" ;;
       /sessions|/ls)
-        # NAME<TAB>LABEL → an indented, readable list.
-        run_command sessions | sed 's/^/  /' >&2
+        repl_sessions "${_dir}"
         [ "${_tty}" = 1 ] && printf '%sUse /resume <ID> to switch.%s\n' "${C_DIM}" "${C_RST}" >&2 ;;
       '/resume '*|'/switch '*)
         _target=${_line#* }

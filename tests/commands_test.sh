@@ -17,6 +17,19 @@ test_commands_listing_includes_shipped() {
   assert_contains "${_out}" 'sessions'
 }
 
+test_sessions_topic_skips_injected_context() {
+  # A SessionStart hook injects opening context; the sessions listing must show
+  # the first *typed* prompt as the topic, not the injected boilerplate.
+  install_hook SessionStart/10.sh <<'EOF'
+echo "INJECTED-CONTEXT-BOILERPLATE"
+EOF
+  _s=$(hnew sesstopic)
+  hsh -q send "${_s}" 'my real first prompt' >/dev/null
+  _line=$(hsh sessions | grep "$(basename "${_s}")")
+  assert_contains "${_line}" 'my real first prompt'
+  assert_not_contains "${_line}" 'INJECTED-CONTEXT-BOILERPLATE'
+}
+
 test_help_lists_commands_section() {
   _out=$(hsh help)
   assert_contains "${_out}" 'Commands (extensible'

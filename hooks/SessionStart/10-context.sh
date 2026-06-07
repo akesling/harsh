@@ -5,10 +5,26 @@
 # the conversation's opening context (added as a user/text entry the model sees
 # on the first turn). Keep it short. Exit code is ignored for this event.
 set -u
-printf 'Session working directory: %s\n' "$(pwd)"
+
+printf '## Session context\n\n'
+printf -- '- **Directory:** %s\n' "$(pwd)"
+
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  printf 'Git branch: %s\n' "$(git branch --show-current 2>/dev/null)"
+  _branch=$(git branch --show-current 2>/dev/null)
+  [ -n "${_branch}" ] || _branch="(detached HEAD)"
+  printf -- '- **Git branch:** %s\n' "${_branch}"
+
+  _head=$(git log -1 --pretty='%h %s' 2>/dev/null)
+  [ -n "${_head}" ] && printf -- '- **HEAD:** %s\n' "${_head}"
+
   _changes=$(git status --short 2>/dev/null | head -n 20)
-  [ -n "${_changes}" ] && printf 'Uncommitted changes:\n%s\n' "${_changes}"
+  if [ -n "${_changes}" ]; then
+    _n=$(printf '%s\n' "${_changes}" | grep -c .)
+    printf -- '- **Uncommitted changes** (%s):\n\n' "${_n}"
+    # shellcheck disable=SC2016  # backticks here are literal markdown fences
+    printf '```\n%s\n```\n' "${_changes}"
+  else
+    printf -- '- **Working tree:** clean\n'
+  fi
 fi
 exit 0
