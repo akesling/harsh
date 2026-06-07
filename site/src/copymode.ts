@@ -4,7 +4,7 @@
 // selection mode over the scrollback, modelled on tmux's copy-mode-vi:
 //   motions   h j k l, w b e, 0 ^ $, gg G, Ctrl-d/u/f/b, H M L, numeric counts
 //   search    / ? to search, n / N to repeat
-//   visual    v (char) / V (line); motions extend; o swaps ends
+//   visual    Space (begin selection, tmux) or v (char) · V (line); motions extend; o swaps
 //   yank      y or Enter copies the selection to the clipboard and exits
 //   leave     q / Esc / i / a returns to typing
 //
@@ -249,7 +249,7 @@ export class CopyMode {
 
     switch (k) {
       case "h": case "ArrowLeft": this.cur.c = Math.max(0, this.cur.c - this.takeCount()); this.want = this.cur.c; break;
-      case "l": case "ArrowRight": case " ": this.cur.c += this.takeCount(); this.clampCur(); this.want = this.cur.c; break;
+      case "l": case "ArrowRight": this.cur.c += this.takeCount(); this.clampCur(); this.want = this.cur.c; break;
       case "j": case "ArrowDown": this.cur.r += this.takeCount(); this.cur.c = this.want; this.clampCur(); break;
       case "k": case "ArrowUp": this.cur.r -= this.takeCount(); this.cur.c = this.want; this.clampCur(); break;
       case "0": this.cur.c = 0; this.want = 0; break;
@@ -267,6 +267,8 @@ export class CopyMode {
       case "?": this.mode = "search"; this.searchDir = -1; this.query = ""; break;
       case "n": this.doSearch(this.searchDir); break;
       case "N": this.doSearch(this.searchDir === 1 ? -1 : 1); break;
+      case " ": // tmux copy-mode-vi: Space begins (or restarts) the selection
+        this.anchor = { ...this.cur }; this.mode = "visual"; break;
       case "v":
         if (this.mode === "visual") { this.mode = "normal"; } else { this.anchor = { ...this.cur }; this.mode = "visual"; }
         break;
@@ -345,7 +347,7 @@ export class CopyMode {
     const pos = `${this.cur.r + 1}:${this.cur.c + 1}`;
     const tag = this.mode === "visual" ? "-- VISUAL --" : this.mode === "vline" ? "-- VISUAL LINE --" : "-- COPY --";
     const hint = this.mode === "normal"
-      ? "  hjkl move · w/b word · v select · y yank · / search · q quit"
+      ? "  hjkl move · w/b word · Space select · y yank · / search · q quit"
       : "  motions extend · y/⏎ yank · o swap · Esc cancel";
     const cnt = this.count ? `  ${this.count}` : "";
     s.textContent = `${tag}  ${pos}${cnt}${hint}`;

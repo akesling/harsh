@@ -587,7 +587,7 @@ function cmdHelp() {
     "",
     "<b>^a [</b> (tmux leader) or <b>Esc</b> enters copy mode — a tmux/vi keyboard layer:",
     "  motions <b>h j k l</b> · <b>w b e</b> · <b>0 ^ $</b> · <b>gg G</b> · <b>^d ^u ^f ^b</b> · <b>H M L</b> (with counts)",
-    "  <b>/</b> <b>?</b> search · <b>n N</b> repeat · <b>v</b>/<b>V</b> select · <b>y</b>/<b>⏎</b> yank to clipboard · <b>q</b> leave",
+    "  <b>/</b> <b>?</b> search · <b>n N</b> repeat · <b>Space</b> select (or <b>V</b> line) · <b>y</b>/<b>⏎</b> yank · <b>q</b> leave",
     "  paste the yanked buffer back into the prompt with <b>^a ]</b> (tmux), <b>^y</b> (emacs), or <b>p</b>/<b>P</b> (vi)",
     "",
     "prompt keymap (badge, top right — click to toggle):",
