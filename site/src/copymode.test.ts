@@ -86,12 +86,22 @@ test("CopyMode: enter, move, visual-select, yank", () => {
   expect(cm.debugState().cur).toEqual({ r: 0, c: 0 });
   cm.handleKey(key("w"));                             // -> "beta"
   expect(cm.debugState().cur).toEqual({ r: 0, c: 6 });
-  cm.handleKey(key("v"));                             // visual from col 6
-  cm.handleKey(key("$"));                             // extend to end of line
+  cm.handleKey(key(" "));                             // Space begins selection (tmux)
   expect(cm.debugState().mode).toBe("visual");
+  cm.handleKey(key("$"));                             // extend to end of line
   cm.handleKey(key("y"));                             // yank
   expect(copied).toBe("beta");
   expect(cm.active).toBe(false);                      // yank exits copy mode
+});
+
+test("CopyMode: Space no longer moves the cursor", () => {
+  (globalThis as any).document = { addEventListener() {}, removeEventListener() {} };
+  const cm = new CopyMode({ scroll: fakeEl({ innerText: "abcdef" }) as any, status: fakeEl() as any, onEnter() {}, onExit() {}, copyText() {} });
+  cm.enter();
+  cm.handleKey(key("g")); cm.handleKey(key("g"));
+  cm.handleKey(key(" "));                             // Space -> select, cursor stays at 0
+  expect(cm.debugState().cur).toEqual({ r: 0, c: 0 });
+  expect(cm.debugState().mode).toBe("visual");
 });
 
 test("CopyMode: counts and Escape leaves", () => {
