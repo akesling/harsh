@@ -79,6 +79,18 @@ a:hover { text-decoration: underline; }
   font-family: var(--mono); font-size: 11px; color: var(--fg-faint);
   background: var(--bg-inset); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
 }
+.mode-badge {
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .04em; text-transform: lowercase;
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border-2));
+  min-width: 3.6em; justify-content: center;
+}
+.mode-badge::before { content: "⌨ "; opacity: .6; }
+.mode-badge:hover { color: var(--fg); border-color: var(--accent); }
+.iconlink {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--fg-dim); padding: 4px; border-radius: 7px;
+}
+.iconlink:hover { color: var(--fg); background: var(--bg-soft); text-decoration: none; }
 
 /* ---- pop-down terminal ------------------------------------------------ */
 .console {
@@ -101,6 +113,8 @@ a:hover { text-decoration: underline; }
   color: var(--fg); font: inherit; caret-color: var(--accent);
 }
 .con-input::placeholder { color: var(--fg-faint); }
+/* vi command (normal) mode: a steady block-ish caret cue + faint tint */
+.con-input.vi-normal { caret-color: transparent; background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 4px; }
 .con-toggle { background: transparent; border: none; color: var(--fg-faint); cursor: pointer; font-size: 13px; padding: 2px 6px; }
 .con-toggle:hover { color: var(--accent); }
 .con-out { line-height: 1.55; white-space: pre-wrap; word-break: break-word; margin: 1px 0; }
@@ -128,6 +142,15 @@ a:hover { text-decoration: underline; }
 
 .main { min-width: 0; padding: 0 0 120px; }
 .doc { position: relative; max-width: 1180px; margin: 0 auto; padding: 26px 28px 0; }
+
+/* footer */
+.site-footer {
+  max-width: 1180px; margin: 56px auto 0; padding: 20px 28px 36px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-faint); font-size: 12.5px; text-align: center;
+}
+.site-footer a { color: var(--fg-dim); }
+.site-footer a:hover { color: var(--accent); }
 
 /* file header card */
 .filehead { margin: 8px 0 22px; }
