@@ -1,8 +1,14 @@
 import { test, expect } from "bun:test";
 import {
   firstNonBlank, wordStartFwd, wordBack, wordEnd,
-  killToEnd, killToStart, deleteCharFwd, clearLine, killWordBack, killWordFwd,
+  killToEnd, killToStart, deleteCharFwd, clearLine, killWordBack, killWordFwd, pasteAt,
 } from "./lineedit.ts";
+
+test("pasteAt — at cursor (emacs yank) and after (vi p)", () => {
+  expect(pasteAt("ab", 0, "X", false)).toEqual({ value: "Xab", cur: 1 });
+  expect(pasteAt("ab", 0, "X", true)).toEqual({ value: "aXb", cur: 2 });
+  expect(pasteAt("", 0, "hi", true)).toEqual({ value: "hi", cur: 2 });
+});
 
 const v = "foo bar baz";
 

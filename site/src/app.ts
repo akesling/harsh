@@ -11,7 +11,7 @@ import DATA from "./generated.json";
 import { CopyMode, prefixCommand } from "./copymode";
 import {
   firstNonBlank, wordStartFwd, wordBack, wordEnd,
-  killToEnd, killToStart, deleteCharFwd, clearLine, killWordBack, killWordFwd, type Edit,
+  killToEnd, killToStart, deleteCharFwd, clearLine, killWordBack, killWordFwd, pasteAt, type Edit,
 } from "./lineedit";
 
 const REPO_URL = "https://github.com/akesling/harsh";
@@ -255,6 +255,26 @@ function setCaret(i: number) { conInput.setSelectionRange(i, i); }
 function histPrev() { if (histIdx > 0) { histIdx--; conInput.value = history[histIdx] || ""; setCaret(conInput.value.length); } }
 function histNext() { if (histIdx < history.length) { histIdx++; conInput.value = history[histIdx] || ""; setCaret(conInput.value.length); } }
 
+// Paste into the prompt at the cursor (emacs C-y / vi P) or after it (vi p).
+function pasteInput(text: string, after = false, onLast = false) {
+  if (!text) return;
+  const r = pasteAt(conInput.value, caret(), text, after);
+  setInput(onLast ? { value: r.value, cur: Math.max(0, r.cur - 1) } : r);
+}
+// tmux `prefix ]`: paste the buffer, preferring the system clipboard when it's
+// readable (https/localhost), falling back to our internal buffer (file://).
+function tmuxPaste() {
+  conInput.focus();
+  const fromBuffer = () => pasteInput(pasteBuffer, true);
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then((sys) => pasteInput(sys || pasteBuffer, true)).catch(fromBuffer);
+      return;
+    }
+  } catch (e) { /* fall through */ }
+  fromBuffer();
+}
+
 // emacs readline bindings (Ctrl uses e.key; Alt uses e.code, since macOS remaps
 // Alt+letter). Returns true if it consumed the key. Ctrl+a stays the tmux leader.
 function emacsKeydown(e: KeyboardEvent): boolean {
@@ -264,10 +284,11 @@ function emacsKeydown(e: KeyboardEvent): boolean {
       case "e": setCaret(v.length); break;
       case "b": setCaret(Math.max(0, c - 1)); break;
       case "f": setCaret(Math.min(v.length, c + 1)); break;
-      case "k": setInput(killToEnd(v, c)); break;
-      case "u": setInput(killToStart(v, c)); break;
-      case "w": setInput(killWordBack(v, c)); break;
+      case "k": pasteBuffer = v.slice(c); setInput(killToEnd(v, c)); break;
+      case "u": pasteBuffer = v.slice(0, c); setInput(killToStart(v, c)); break;
+      case "w": { const r = killWordBack(v, c); pasteBuffer = v.slice(r.cur, c); setInput(r); break; }
       case "d": setInput(deleteCharFwd(v, c)); break;
+      case "y": pasteInput(pasteBuffer); break;           // yank (paste) the buffer
       case "p": histPrev(); break;
       case "n": histNext(); break;
       default: return false;
@@ -300,12 +321,12 @@ function viKeydown(e: KeyboardEvent): boolean {
   // operator pending (d / c) + motion
   if (viPending) {
     const op = viPending; viPending = "";
-    let r: Edit | null = null;
-    if (e.key === "w") r = killWordFwd(v, c);
-    else if (e.key === "b") { const s = wordBack(v, c); r = { value: v.slice(0, s) + v.slice(c), cur: s }; }
-    else if (e.key === "$") r = killToEnd(v, c);
-    else if (e.key === op) r = clearLine();           // dd / cc
-    if (r) { setInput(r); if (op === "c") viInsert = true; }
+    let r: Edit | null = null, killed = "";
+    if (e.key === "w") { killed = v.slice(c, wordStartFwd(v, c)); r = killWordFwd(v, c); }
+    else if (e.key === "b") { const s = wordBack(v, c); killed = v.slice(s, c); r = { value: v.slice(0, s) + v.slice(c), cur: s }; }
+    else if (e.key === "$") { killed = v.slice(c); r = killToEnd(v, c); }
+    else if (e.key === op) { killed = v; r = clearLine(); }   // dd / cc
+    if (r) { if (killed) pasteBuffer = killed; setInput(r); if (op === "c") viInsert = true; }
     updateModeStatus(); return true;
   }
   switch (e.key) {
@@ -317,9 +338,11 @@ function viKeydown(e: KeyboardEvent): boolean {
     case "w": setCaret(wordStartFwd(v, c)); break;
     case "b": setCaret(wordBack(v, c)); break;
     case "e": setCaret(wordEnd(v, c)); break;
-    case "x": { const r = deleteCharFwd(v, c); setInput({ value: r.value, cur: Math.min(r.cur, Math.max(0, r.value.length - 1)) }); break; }
-    case "D": setInput(killToEnd(v, c)); break;
-    case "C": setInput(killToEnd(v, c)); viInsert = true; break;
+    case "x": { pasteBuffer = v.slice(c, c + 1) || pasteBuffer; const r = deleteCharFwd(v, c); setInput({ value: r.value, cur: Math.min(r.cur, Math.max(0, r.value.length - 1)) }); break; }
+    case "D": pasteBuffer = v.slice(c) || pasteBuffer; setInput(killToEnd(v, c)); break;
+    case "C": pasteBuffer = v.slice(c) || pasteBuffer; setInput(killToEnd(v, c)); viInsert = true; break;
+    case "p": pasteInput(pasteBuffer, true, true); break;   // paste after cursor
+    case "P": pasteInput(pasteBuffer, false, true); break;  // paste before cursor
     case "d": viPending = "d"; break;
     case "c": viPending = "c"; break;
     case "i": viInsert = true; break;
@@ -377,6 +400,7 @@ let prefixArmed = false, prefixTimer: any = null;   // tmux Ctrl+a leader
 let inputMode: "emacs" | "vi" = "emacs";            // prompt editing keymap
 let viInsert = true;                                // vi sub-mode (insert vs normal)
 let viPending = "";                                 // vi operator pending (d / c)
+let pasteBuffer = "";                               // tmux-style buffer: last yank/kill
 let modeBadge: HTMLElement | null = null;
 let vfs = new Map<string, { dirs: Set<string>; files: Map<string, any> }>();
 let cwd = "";
@@ -423,7 +447,7 @@ function buildConsole(idx: { files: any[] }) {
     scroll: conScroll, status: conStatus,
     onEnter: () => conInput.blur(),
     onExit: () => conInput.focus(),
-    copyText,
+    copyText: (s) => { pasteBuffer = s; copyText(s); },   // yank fills the paste buffer too
   });
 
   conEl.querySelector("#con-toggle")!.addEventListener("click", toggleConsole);
@@ -479,13 +503,14 @@ function onConsoleKey(e: KeyboardEvent) {
     if (e.ctrlKey && e.key.toLowerCase() === "a") { setCaret(0); return; }
     const act = prefixCommand(e.key);
     if (act === "copy") { openConsole(); copyMode.enter(); }
+    else if (act === "paste") { tmuxPaste(); }
     else if (act === "help") { cmdHelp(); }
     return; // the key after the leader is consumed either way
   }
   if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "a") {
     e.preventDefault();
     prefixArmed = true;
-    conStatus.textContent = "^a —  [ copy/select mode · ^a beginning of line · ? help";
+    conStatus.textContent = "^a —  [ copy/select · ] paste · ^a line start · ? help";
     conStatus.className = "con-status";
     clearTimeout(prefixTimer);
     prefixTimer = setTimeout(disarmPrefix, 2500);
@@ -563,10 +588,11 @@ function cmdHelp() {
     "<b>^a [</b> (tmux leader) or <b>Esc</b> enters copy mode — a tmux/vi keyboard layer:",
     "  motions <b>h j k l</b> · <b>w b e</b> · <b>0 ^ $</b> · <b>gg G</b> · <b>^d ^u ^f ^b</b> · <b>H M L</b> (with counts)",
     "  <b>/</b> <b>?</b> search · <b>n N</b> repeat · <b>v</b>/<b>V</b> select · <b>y</b>/<b>⏎</b> yank to clipboard · <b>q</b> leave",
+    "  paste the yanked buffer back into the prompt with <b>^a ]</b> (tmux), <b>^y</b> (emacs), or <b>p</b>/<b>P</b> (vi)",
     "",
     "prompt keymap (badge, top right — click to toggle):",
-    "  <b>emacs</b>: ^e ^b ^f ^k ^u ^w ^d · M-f/b/d · ^p/^n history · ^a leader (^a^a = line start)",
-    "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e · x D C · dd dw · i a A I · k/j history",
+    "  <b>emacs</b>: ^e ^b ^f ^k ^u ^w ^d ^y · M-f/b/d · ^p/^n history · ^a leader (^a^a = line start)",
+    "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e · x D C · dd dw · p P · i a A I · k/j history",
     "  <b>vi page</b> (when not typing): <b>j/k</b> scroll · <b>^d/^u</b> half-page · <b>gg/G</b> top/bottom",
     "",
     "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> toggles · <b>⌘K</b> jump palette",
