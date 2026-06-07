@@ -1,0 +1,38 @@
+name: deploy
+
+# Publish the source tour (site/) to Cloudflare Pages on every update to main.
+# Deploying with --branch=main marks this as the *production* deployment for the
+# Pages project; PR builds deploy to other branch names and Cloudflare serves
+# those as preview deployments automatically (see preview-deploy.yml).
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cf-pages-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build site
+        working-directory: site
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Deploy to Cloudflare Pages (production)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # PROJECT_NAME is the Cloudflare Pages project; set it as a repo
+          # variable (Settings → Secrets and variables → Actions → Variables).
+          command: pages deploy site/dist --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=main

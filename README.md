@@ -302,6 +302,33 @@ touches the real `sessions/`, `logs/`, or `hooks/`. See `tests/README.md`.
 Contributing conventions (deps, portability, shell variable style, the
 quality gate) live in [`STYLE.md`](STYLE.md).
 
+## CI & source-tour previews
+
+GitHub Actions (`.github/workflows/`) run the same checks as above and publish
+the interactive source tour (`site/`) to **Cloudflare Pages** via Wrangler:
+
+| Workflow | Trigger | Does |
+| --- | --- | --- |
+| `ci` | push to main, every PR | `scripts/quality_gates.sh` + `bun test` + site build |
+| `deploy` | push to main | build site → `wrangler pages deploy --branch=main` (production) |
+| `preview-build` → `preview-deploy` | every PR | build (untrusted), then `wrangler pages deploy --branch=pr-<N>` and comment the URL |
+
+Cloudflare Pages handles the production/preview split natively by branch name:
+`--branch=main` is the production deployment; any other branch is served as a
+preview at a stable `https://pr-<N>.<project>.pages.dev` alias, so no cleanup
+job is needed. The build/deploy split (a no-secrets `pull_request` build that
+hands a trusted `workflow_run` deploy an artifact) keeps the Cloudflare token
+out of untrusted fork PRs while still giving them a preview.
+
+**One-time setup:**
+
+1. Create a Cloudflare Pages project (Direct Upload / "Connect later").
+2. Add repo **secrets** `CLOUDFLARE_API_TOKEN` (a token with the *Cloudflare
+   Pages: Edit* permission) and `CLOUDFLARE_ACCOUNT_ID`.
+3. Add a repo **variable** `CF_PAGES_PROJECT` set to the Pages project name.
+
+(Settings → Secrets and variables → Actions.)
+
 ## Portability notes
 
 Scripts target POSIX `sh` and avoid arrays, `[[ ]]`, and process substitution.

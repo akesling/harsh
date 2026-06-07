@@ -1,0 +1,43 @@
+name: preview-build
+
+# Build a PR's source tour and stash it as an artifact. This runs with the PR's
+# (untrusted) code, so it has NO secrets — it only produces an artifact. The
+# privileged Cloudflare deploy happens in preview-deploy.yml, which runs trusted
+# code from the default branch via workflow_run. This split is what lets fork
+# PRs get a preview without exposing the Cloudflare token.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: preview-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build site
+        working-directory: site
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      # Pass the PR number through to the deploy job (it can't read PR context
+      # from the workflow_run event reliably for forks). Trusting it from the
+      # artifact is safe: the deploy job validates it is purely numeric.
+      - name: Record PR number
+        run: echo "${{ github.event.pull_request.number }}" > site/dist/.pr-number
+
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-site
+          path: site/dist
+          retention-days: 3

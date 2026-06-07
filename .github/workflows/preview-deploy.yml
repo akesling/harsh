@@ -1,0 +1,65 @@
+name: preview-deploy
+
+# Deploy the artifact built by preview-build.yml to Cloudflare Pages as a
+# preview deployment, then leave (or update) a sticky comment linking it. This
+# is triggered by workflow_run, so it runs the trusted workflow definition from
+# the default branch — safe to hold the Cloudflare token even for fork PRs.
+on:
+  workflow_run:
+    workflows: [preview-build]
+    types: [completed]
+
+concurrency:
+  group: cf-pages-preview-${{ github.event.workflow_run.id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write   # post the preview comment
+  actions: read          # download the artifact
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download preview artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: preview-site
+          path: dist
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Resolve PR number
+        id: pr
+        run: |
+          n=$(cat dist/.pr-number)
+          case "$n" in
+            ''|*[!0-9]*) echo "invalid PR number: '$n'" >&2; exit 1 ;;
+          esac
+          rm -f dist/.pr-number
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+
+      # Deploy under a deterministic branch name so the preview gets the stable
+      # alias https://pr-<N>.<project>.pages.dev. wrangler-action exposes both
+      # the per-build `deployment-url` and the stable `pages-deployment-alias-url`.
+      - name: Deploy to Cloudflare Pages (preview)
+        id: cf
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=pr-${{ steps.pr.outputs.number }}
+
+      - name: Comment the preview URL
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          number: ${{ steps.pr.outputs.number }}
+          header: preview
+          message: |
+            📖 **Source-tour preview** for this PR:
+            ${{ steps.cf.outputs.pages-deployment-alias-url }}
+
+            This build: ${{ steps.cf.outputs.deployment-url }}
+            Built from ${{ github.event.workflow_run.head_sha }} · redeploys on every push.
