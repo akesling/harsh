@@ -1,8 +1,15 @@
 import { test, expect } from "bun:test";
 import {
   cls, flatten, posToIdx, idxToPos, wordFwd, wordBack, wordEnd, searchFrom,
-  firstNonBlank, selectionText, CopyMode,
+  firstNonBlank, selectionText, prefixCommand, CopyMode,
 } from "./copymode.ts";
+
+test("tmux prefix (Ctrl+a) command table", () => {
+  expect(prefixCommand("[")).toBe("copy");   // ^a [ -> copy/select mode
+  expect(prefixCommand("?")).toBe("help");
+  expect(prefixCommand("x")).toBeNull();
+  expect(prefixCommand("Escape")).toBeNull();
+});
 
 const lines = ["foo bar  baz", "  hello world", "qux"];
 const { text, rowStart } = flatten(lines);

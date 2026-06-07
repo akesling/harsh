@@ -10,8 +10,21 @@
 //
 // The pure motion/selection helpers are exported and unit-tested; the CopyMode
 // class wires them to the DOM (render, keys, clipboard).
+//
+// Entered via the tmux prefix (Ctrl+a then [) or Esc.
 
 export type Pos = { r: number; c: number };
+
+// tmux prefix (Ctrl+a) command table: maps the key pressed after the prefix to
+// an action, or null if it isn't bound. `[` enters copy mode, like tmux.
+export type PrefixAction = "copy" | "help";
+export function prefixCommand(key: string): PrefixAction | null {
+  switch (key) {
+    case "[": return "copy";
+    case "?": return "help";
+    default: return null;
+  }
+}
 
 export const cls = (ch: string | undefined): "blank" | "word" | "punct" =>
   ch === undefined || ch === "" ? "blank"
