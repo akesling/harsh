@@ -277,7 +277,11 @@ EOF
       fi
       redraw "${_dir}"; continue ;;
     *)
-      ${_harsh} send "${_sess}" "${_line}" && ${_harsh} run "${_sess}"
+      # Acknowledge the turn before the blocking run; redraw wipes the notice.
+      if ${_harsh} send "${_sess}" "${_line}"; then
+        printf '%s%s working…%s\n' "${C_DIM}" "${GUTTER}" "${C_RST}"
+        ${_harsh} run "${_sess}"
+      fi
       redraw "${_dir}"; continue ;;
   esac
 done

@@ -79,7 +79,7 @@ load_config() {
   : "${HARSH_HOOKS_DIR:=${SELF_DIR}/hooks}"
   : "${HARSH_COMMANDS_DIR:=${SELF_DIR}/commands}"
   : "${HARSH_LIB_DIR:=${SELF_DIR}/lib}"
-  : "${HARSH_SYSTEM_PROMPT:=You are harsh, a concise and capable coding agent operating through a portable shell harness. Use the provided tools to inspect and modify the project. Prefer small, verifiable steps. When done, stop.}"
+  : "${HARSH_SYSTEM_PROMPT:=You are a concise and capable assistant operating inside harsh, a coding agent harness. Prefer small, verifiable steps. When the task is complete, stop and summarize.}"
   HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
   # Expose the harness path and resolved config to tool subprocesses, so a tool
   # (e.g. tools/agent.sh) can re-invoke harsh for a sub-session with the same
@@ -650,10 +650,11 @@ cmd_repl() {
       trap 'printf "\033[?2004l" >&2' EXIT TERM
     fi
     # Ctrl-C cancels the line in progress, like a normal shell: the tty discards
-    # the partial line, and this handler acknowledges the interrupt. The `read`
-    # it interrupted falls through to the loop top, which redraws the prompt, so
-    # we do NOT exit and we do NOT swallow the next line (no discard flag).
-    trap 'printf "%s^C — interrupted (Ctrl-D or /quit to exit)%s\n" "${C_DIM}" "${C_RST}" >&2' INT
+    # the partial line and this handler acknowledges the interrupt. The
+    # interrupted read resumes in place (it does NOT loop back to the prompt), so
+    # the handler also redraws the "harsh>" prompt — otherwise the user is left on
+    # a bare line. We do NOT exit and do NOT swallow the next line.
+    trap 'printf "%s^C — interrupted (Ctrl-D or /quit to exit)%s\n%sharsh>%s " "${C_DIM}" "${C_RST}" "${C_USER}" "${C_RST}" >&2' INT
   fi
   while :; do
     [ "${_tty}" = 1 ] && printf '%sharsh>%s ' "${C_USER}" "${C_RST}" >&2
@@ -712,9 +713,15 @@ cmd_repl() {
         fi ;;
       *)
         # No prompt echo: the user just typed it at the "harsh>" line directly
-        # above, so repeating it only adds noise. A blank line sets the reply off.
+        # above, so repeating it only adds noise. A blank line sets the reply
+        # off; once the prompt is recorded, a dim "working…" acknowledges the
+        # turn has started — the API call blocks, so this is the only feedback
+        # until the reply lands.
         [ "${_tty}" = 1 ] && printf '\n' >&2
-        cmd_send "${_sess}" "${_line}" && cmd_run "${_sess}" ;;
+        if cmd_send "${_sess}" "${_line}"; then
+          [ "${_tty}" = 1 ] && printf '%s%s working…%s\n' "${C_DIM}" "${GUTTER}" "${C_RST}" >&2
+          cmd_run "${_sess}"
+        fi ;;
     esac
   done
   if [ "${_tty}" = 1 ]; then
