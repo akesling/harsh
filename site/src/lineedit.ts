@@ -8,34 +8,38 @@ export type Edit = { value: string; cur: number };
 
 export const firstNonBlank = (v: string) => { const m = v.match(/\S/); return m ? m.index! : 0; };
 
-// 'w' — start of the next word (or end of line).
-export function wordStartFwd(v: string, c: number): number {
+// word vs WORD: with big=true (W/B/E) punctuation counts as part of the word, so
+// words are split only on whitespace.
+const wc = (ch: string | undefined, big: boolean) => { const k = cls(ch); return big && k === "punct" ? "word" : k; };
+
+// 'w' / 'W' — start of the next word (or end of line).
+export function wordStartFwd(v: string, c: number, big = false): number {
   const n = v.length;
   if (c >= n) return n;
-  const start = cls(v[c]);
+  const start = wc(v[c], big);
   let i = c;
-  if (start !== "blank") while (i < n && cls(v[i]) === start) i++;
-  while (i < n && cls(v[i]) === "blank") i++;
+  if (start !== "blank") while (i < n && wc(v[i], big) === start) i++;
+  while (i < n && wc(v[i], big) === "blank") i++;
   return Math.min(i, n);
 }
-// 'b' — start of the previous word.
-export function wordBack(v: string, c: number): number {
+// 'b' / 'B' — start of the previous word.
+export function wordBack(v: string, c: number, big = false): number {
   let i = c;
   if (i <= 0) return 0;
   i--;
-  while (i > 0 && cls(v[i]) === "blank") i--;
-  const k = cls(v[i]);
-  while (i > 0 && cls(v[i - 1]) === k && k !== "blank") i--;
+  while (i > 0 && wc(v[i], big) === "blank") i--;
+  const k = wc(v[i], big);
+  while (i > 0 && wc(v[i - 1], big) === k && k !== "blank") i--;
   return i;
 }
-// 'e' — end of the current/next word.
-export function wordEnd(v: string, c: number): number {
+// 'e' / 'E' — end of the current/next word.
+export function wordEnd(v: string, c: number, big = false): number {
   const n = v.length;
   if (c >= n - 1) return Math.max(0, n - 1);
   let i = c + 1;
-  while (i < n - 1 && cls(v[i]) === "blank") i++;
-  const k = cls(v[i]);
-  while (i < n - 1 && cls(v[i + 1]) === k && k !== "blank") i++;
+  while (i < n - 1 && wc(v[i], big) === "blank") i++;
+  const k = wc(v[i], big);
+  while (i < n - 1 && wc(v[i + 1], big) === k && k !== "blank") i++;
   return i;
 }
 

@@ -1,8 +1,24 @@
 import { test, expect } from "bun:test";
 import {
   cls, flatten, posToIdx, idxToPos, wordFwd, wordBack, wordEnd, searchFrom,
-  firstNonBlank, selectionText, prefixCommand, CopyMode,
+  firstNonBlank, selectionText, prefixCommand, findChar, CopyMode,
 } from "./copymode.ts";
+
+test("WORD motions (big=true) treat punctuation as part of the word", () => {
+  const t = "foo.bar baz";
+  expect(wordFwd(t, 0)).toBe(3);          // w -> the '.'
+  expect(wordFwd(t, 0, true)).toBe(8);    // W -> 'baz' (foo.bar is one WORD)
+  expect(wordBack(t, 8, true)).toBe(0);   // B -> start of foo.bar
+  expect(wordEnd(t, 0, true)).toBe(6);    // E -> 'r' of foo.bar
+});
+
+test("findChar: f/F and t/T (till)", () => {
+  const t = "foo.bar baz";
+  expect(findChar(t, 0, "b", 1, false)).toBe(4);   // f b
+  expect(findChar(t, 0, "b", 1, true)).toBe(3);    // t b (one before)
+  expect(findChar(t, 10, "f", -1, false)).toBe(0); // F f (backward)
+  expect(findChar(t, 0, "z", -1, false)).toBe(0);  // not found -> stays
+});
 
 test("tmux prefix (Ctrl+a) command table", () => {
   expect(prefixCommand("[")).toBe("copy");   // ^a [ -> copy/select mode
@@ -102,6 +118,18 @@ test("CopyMode: Space no longer moves the cursor", () => {
   cm.handleKey(key(" "));                             // Space -> select, cursor stays at 0
   expect(cm.debugState().cur).toEqual({ r: 0, c: 0 });
   expect(cm.debugState().mode).toBe("visual");
+});
+
+test("CopyMode: f<char> and W navigate within the line", () => {
+  (globalThis as any).document = { addEventListener() {}, removeEventListener() {} };
+  const cm = new CopyMode({ scroll: fakeEl({ innerText: "foo.bar baz" }) as any, status: fakeEl() as any, onEnter() {}, onExit() {}, copyText() {} });
+  cm.enter();                                         // single line -> cursor {0,0}
+  cm.handleKey(key("f")); cm.handleKey(key("b"));     // f b -> first 'b' at col 4
+  expect(cm.debugState().cur).toEqual({ r: 0, c: 4 });
+  cm.handleKey(key(";"));                             // ; -> next 'b' (in "baz") at col 8
+  expect(cm.debugState().cur).toEqual({ r: 0, c: 8 });
+  cm.handleKey(key("0")); cm.handleKey(key("W"));     // W -> 'baz' at col 8
+  expect(cm.debugState().cur).toEqual({ r: 0, c: 8 });
 });
 
 test("CopyMode: counts and Escape leaves", () => {

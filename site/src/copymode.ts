@@ -2,7 +2,7 @@
 //
 // Press Esc in the console to drop into a modal, keyboard-only navigation +
 // selection mode over the scrollback, modelled on tmux's copy-mode-vi:
-//   motions   h j k l, w b e, 0 ^ $, gg G, Ctrl-d/u/f/b, H M L, numeric counts
+//   motions   h j k l, w b e / W B E, f F t T (; ,), 0 ^ $, gg G, Ctrl-d/u/f/b, H M L, counts
 //   search    / ? to search, n / N to repeat
 //   visual    Space (begin selection, tmux) or v (char) · V (line); motions extend; o swaps
 //   yank      y or Enter copies the selection to the clipboard and exits
@@ -50,31 +50,44 @@ export function idxToPos(lines: string[], rowStart: number[], idx: number): Pos 
   return { r, c };
 }
 
-// vim word motions over the flat text, returning a clamped index.
-export function wordFwd(text: string, i: number): number {
+// vim word motions over the flat text, returning a clamped index. With big=true
+// these are WORD motions (W/E/B): whitespace-delimited, so punctuation is part
+// of the word.
+const wcls = (ch: string | undefined, big: boolean) => { const k = cls(ch); return big && k === "punct" ? "word" : k; };
+export function wordFwd(text: string, i: number, big = false): number {
   const n = text.length;
   if (i >= n - 1) return n - 1;
-  const start = cls(text[i]);
-  if (start !== "blank") while (i < n && cls(text[i]) === start) i++;
-  while (i < n && cls(text[i]) === "blank") i++;
+  const start = wcls(text[i], big);
+  if (start !== "blank") while (i < n && wcls(text[i], big) === start) i++;
+  while (i < n && wcls(text[i], big) === "blank") i++;
   return Math.min(i, n - 1);
 }
-export function wordBack(text: string, i: number): number {
+export function wordBack(text: string, i: number, big = false): number {
   if (i <= 0) return 0;
   i--;
-  while (i > 0 && cls(text[i]) === "blank") i--;
-  const c = cls(text[i]);
-  while (i > 0 && cls(text[i - 1]) === c && c !== "blank") i--;
+  while (i > 0 && wcls(text[i], big) === "blank") i--;
+  const c = wcls(text[i], big);
+  while (i > 0 && wcls(text[i - 1], big) === c && c !== "blank") i--;
   return i;
 }
-export function wordEnd(text: string, i: number): number {
+export function wordEnd(text: string, i: number, big = false): number {
   const n = text.length;
   if (i >= n - 1) return n - 1;
   i++;
-  while (i < n - 1 && cls(text[i]) === "blank") i++;
-  const c = cls(text[i]);
-  while (i < n - 1 && cls(text[i + 1]) === c && c !== "blank") i++;
+  while (i < n - 1 && wcls(text[i], big) === "blank") i++;
+  const c = wcls(text[i], big);
+  while (i < n - 1 && wcls(text[i + 1], big) === c && c !== "blank") i++;
   return i;
+}
+
+// find-char within a single line: f/t (dir +1) and F/T (dir -1); `till` (t/T)
+// stops one cell before the target. Returns the new column, or the original if
+// not found. `from` is the current column.
+export function findChar(line: string, from: number, ch: string, dir: 1 | -1, till: boolean): number {
+  for (let i = from + dir; i >= 0 && i < line.length; i += dir) {
+    if (line[i] === ch) return till ? i - dir : i;
+  }
+  return from;
 }
 
 // case-insensitive search from index `from` (exclusive), wrapping around.
@@ -126,6 +139,8 @@ export class CopyMode {
   private want = 0;            // desired column for j/k
   private count = "";         // numeric prefix
   private gpending = false;   // saw a 'g'
+  private findPending: "" | "f" | "F" | "t" | "T" = ""; // awaiting f/F/t/T target
+  private lastFind: { ch: string; dir: 1 | -1; till: boolean } | null = null;
   private query = "";
   private lastQuery = "";
   private searchDir: 1 | -1 = 1;
@@ -144,7 +159,7 @@ export class CopyMode {
     this.lines = txt.length ? txt.split("\n") : [""];
     this.cur = { r: this.lines.length - 1, c: 0 };
     this.anchor = { ...this.cur };
-    this.mode = "normal"; this.want = 0; this.count = ""; this.gpending = false; this.query = "";
+    this.mode = "normal"; this.want = 0; this.count = ""; this.gpending = false; this.findPending = ""; this.query = "";
     this.savedHtml = this.o.scroll.innerHTML;
     this.o.scroll.innerHTML = `<pre class="copybuf"></pre>`;
     this.pre = this.o.scroll.querySelector(".copybuf");
@@ -226,6 +241,18 @@ export class CopyMode {
       return true;
     }
 
+    // f/F/t/T target: the next key is the character to find on this line
+    if (this.findPending) {
+      const fp = this.findPending; this.findPending = "";
+      if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const dir: 1 | -1 = fp === "f" || fp === "t" ? 1 : -1;
+        const till = fp === "t" || fp === "T";
+        this.cur.c = findChar(this.line(), this.cur.c, k, dir, till);
+        this.lastFind = { ch: k, dir, till }; this.want = this.cur.c;
+      }
+      this.clampCur(); this.render(); return true;
+    }
+
     // Ctrl- scroll/page motions
     if (e.ctrlKey) {
       const vr = this.viewRows();
@@ -258,6 +285,12 @@ export class CopyMode {
       case "w": this.idxMotion(wordFwd, this.takeCount()); break;
       case "b": this.idxMotion(wordBack, this.takeCount()); break;
       case "e": this.idxMotion(wordEnd, this.takeCount()); break;
+      case "W": this.idxMotion((t, i) => wordFwd(t, i, true), this.takeCount()); break;
+      case "B": this.idxMotion((t, i) => wordBack(t, i, true), this.takeCount()); break;
+      case "E": this.idxMotion((t, i) => wordEnd(t, i, true), this.takeCount()); break;
+      case "f": case "F": case "t": case "T": this.findPending = k as "f"; break;
+      case ";": if (this.lastFind) { this.cur.c = findChar(this.line(), this.cur.c, this.lastFind.ch, this.lastFind.dir, this.lastFind.till); this.want = this.cur.c; } break;
+      case ",": if (this.lastFind) { this.cur.c = findChar(this.line(), this.cur.c, this.lastFind.ch, (this.lastFind.dir * -1) as 1 | -1, this.lastFind.till); this.want = this.cur.c; } break;
       case "g": this.gpending = true; break;
       case "G": this.cur.r = this.count ? this.takeCount() - 1 : this.lines.length - 1; this.cur.c = 0; this.clampCur(); break;
       case "H": this.cur.r = this.topRow(); this.cur.c = this.want; this.clampCur(); break;

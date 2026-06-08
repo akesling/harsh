@@ -8,7 +8,7 @@
 // navigation, full-text search, a ⌘K palette, and Markdown rendering.
 import lunr from "lunr";
 import DATA from "./generated.json";
-import { CopyMode, prefixCommand } from "./copymode";
+import { CopyMode, prefixCommand, findChar } from "./copymode";
 import {
   firstNonBlank, wordStartFwd, wordBack, wordEnd,
   killToEnd, killToStart, deleteCharFwd, clearLine, killWordBack, killWordFwd, pasteAt, type Edit,
@@ -234,7 +234,7 @@ function updateBadge() {
   modeBadge.dataset.mode = inputMode;
 }
 function setInputMode(m: "emacs" | "vi") {
-  inputMode = m; viInsert = true; viPending = "";
+  inputMode = m; viInsert = true; viPending = ""; viFindPending = "";
   try { localStorage.setItem("harsh-inputmode", m); } catch (e) {}
   updateBadge(); updateModeStatus();
 }
@@ -317,12 +317,24 @@ function viKeydown(e: KeyboardEvent): boolean {
     return false;
   }
   e.preventDefault();
+  // f/F/t/T target: next key is the char to find on the line
+  if (viFindPending) {
+    const fp = viFindPending; viFindPending = "";
+    if (e.key.length === 1) {
+      const dir: 1 | -1 = fp === "f" || fp === "t" ? 1 : -1;
+      const till = fp === "t" || fp === "T";
+      setCaret(findChar(v, c, e.key, dir, till));
+      viLastFind = { ch: e.key, dir, till };
+    }
+    updateModeStatus(); return true;
+  }
   // operator pending (d / c) + motion
   if (viPending) {
     const op = viPending; viPending = "";
     let r: Edit | null = null, killed = "";
-    if (e.key === "w") { killed = v.slice(c, wordStartFwd(v, c)); r = killWordFwd(v, c); }
-    else if (e.key === "b") { const s = wordBack(v, c); killed = v.slice(s, c); r = { value: v.slice(0, s) + v.slice(c), cur: s }; }
+    if (e.key === "w" || e.key === "W") { const en = wordStartFwd(v, c, e.key === "W"); killed = v.slice(c, en); r = { value: v.slice(0, c) + v.slice(en), cur: c }; }
+    else if (e.key === "e" || e.key === "E") { const en = wordEnd(v, c, e.key === "E") + 1; killed = v.slice(c, en); r = { value: v.slice(0, c) + v.slice(en), cur: c }; }
+    else if (e.key === "b" || e.key === "B") { const s = wordBack(v, c, e.key === "B"); killed = v.slice(s, c); r = { value: v.slice(0, s) + v.slice(c), cur: s }; }
     else if (e.key === "$") { killed = v.slice(c); r = killToEnd(v, c); }
     else if (e.key === op) { killed = v; r = clearLine(); }   // dd / cc
     if (r) { if (killed) pasteBuffer = killed; setInput(r); if (op === "c") viInsert = true; }
@@ -337,6 +349,12 @@ function viKeydown(e: KeyboardEvent): boolean {
     case "w": setCaret(wordStartFwd(v, c)); break;
     case "b": setCaret(wordBack(v, c)); break;
     case "e": setCaret(wordEnd(v, c)); break;
+    case "W": setCaret(wordStartFwd(v, c, true)); break;
+    case "B": setCaret(wordBack(v, c, true)); break;
+    case "E": setCaret(wordEnd(v, c, true)); break;
+    case "f": case "F": case "t": case "T": viFindPending = e.key; break;
+    case ";": if (viLastFind) setCaret(findChar(v, c, viLastFind.ch, viLastFind.dir, viLastFind.till)); break;
+    case ",": if (viLastFind) setCaret(findChar(v, c, viLastFind.ch, (viLastFind.dir * -1) as 1 | -1, viLastFind.till)); break;
     case "x": { pasteBuffer = v.slice(c, c + 1) || pasteBuffer; const r = deleteCharFwd(v, c); setInput({ value: r.value, cur: Math.min(r.cur, Math.max(0, r.value.length - 1)) }); break; }
     case "D": pasteBuffer = v.slice(c) || pasteBuffer; setInput(killToEnd(v, c)); break;
     case "C": pasteBuffer = v.slice(c) || pasteBuffer; setInput(killToEnd(v, c)); viInsert = true; break;
@@ -399,6 +417,8 @@ let prefixArmed = false, prefixTimer: any = null;   // tmux Ctrl+a leader
 let inputMode: "emacs" | "vi" = "emacs";            // prompt editing keymap
 let viInsert = true;                                // vi sub-mode (insert vs normal)
 let viPending = "";                                 // vi operator pending (d / c)
+let viFindPending = "";                             // vi f/F/t/T awaiting target char
+let viLastFind: { ch: string; dir: 1 | -1; till: boolean } | null = null;
 let pasteBuffer = "";                               // tmux-style buffer: last yank/kill
 let modeBadge: HTMLElement | null = null;
 let vfs = new Map<string, { dirs: Set<string>; files: Map<string, any> }>();
@@ -601,7 +621,7 @@ function cmdHelp() {
     "",
     "prompt keymap (badge, top right — click to toggle):",
     "  <b>emacs</b>: ^e ^b ^f ^k ^u ^w ^d ^y · M-f/b/d · ^p/^n history · ^a leader (^a^a = line start)",
-    "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e · x D C · dd dw · p P · i a A I · k/j history",
+    "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e / W B E · f F t T ; , · x D C · dd dw cw · p P · i a A I",
     "  <b>vi page</b> (when not typing): <b>j/k</b> scroll · <b>^d/^u</b> half-page · <b>gg/G</b> top/bottom",
     "",
     "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> opens · <b>^d</b> closes (empty prompt) · <b>⌘K</b> palette",

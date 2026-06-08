@@ -19,6 +19,14 @@ test("word motions on a single line", () => {
   expect(wordEnd(v, 0)).toBe(2);        // -> end of foo
 });
 
+test("WORD motions (big) skip punctuation", () => {
+  const s = "a.b cd";
+  expect(wordStartFwd(s, 0)).toBe(1);         // w -> '.'
+  expect(wordStartFwd(s, 0, true)).toBe(4);   // W -> 'cd'
+  expect(wordBack(s, 4, true)).toBe(0);       // B -> start of a.b
+  expect(wordEnd(s, 0, true)).toBe(2);        // E -> 'b'
+});
+
 test("firstNonBlank", () => {
   expect(firstNonBlank("  hi")).toBe(2);
   expect(firstNonBlank("x")).toBe(0);
