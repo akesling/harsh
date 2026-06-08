@@ -152,7 +152,7 @@ run_hooks() {
   mkdir -p "${HARSH_LOG_DIR}" 2>/dev/null || true
   # Scan the event dir (runs for everything), then the tool-specific subdir.
   for _d in "${_base}" "${_tool:+${_base}/${_tool}}"; do
-    [ -n "${_d}" ] && [ -d "${_d}" ] || continue
+    { [ -n "${_d}" ] && [ -d "${_d}" ]; } || continue
     for _h in "${_d}"/*.sh; do
       [ -f "${_h}" ] || continue
       _out=$(printf '%s' "${_payload}" | sh "${_h}" 2>>"${HARSH_LOG_DIR}/hooks.log"); _rc=$?
@@ -493,7 +493,9 @@ REPL:
   /new             start a fresh session
   /help            this help;  /quit  exit (or Ctrl-D)
 
-  ↑/↓              recall earlier input (when rlwrap is installed; Ctrl-R searches)
+  Ctrl-C           cancel the current line (Ctrl-D or /quit to exit)
+  (paste)          a multi-line paste is sent as a single prompt
+  ↑/↓              recall earlier input — only in HARSH_RLWRAP=1 mode (Ctrl-R searches)
 
 Commands (type as /NAME — SESSION is filled in automatically):
 EOF
@@ -520,21 +522,98 @@ repl_sessions() {
   done
 }
 
+# Bracketed-paste markers. Terminals in bracketed-paste mode wrap a paste in
+# ESC[200~ … ESC[201~, so a multi-line paste arrives as several `read` lines with
+# the start marker on the first and the end marker on the last. We use these to
+# stitch a paste back into ONE prompt (see read_prompt). The bytes are built once.
+_PASTE_BEG=$(printf '\033[200~'); _PASTE_END=$(printf '\033[201~')
+_ESC=$(printf '\033')
+
+# strip_nav — remove bare cursor/navigation escape sequences from a typed line.
+# Without readline (the default native loop), pressing ↑/↓/←/→ or Home/End emits
+# CSI sequences (ESC[A, ESC[1~, …) that `read` would otherwise capture as literal
+# junk in the message. We can't turn them into history, but we can keep them from
+# corrupting input. Sets $_line. Only applied to typed lines, never to pastes
+# (a pasted snippet may legitimately contain escapes).
+strip_nav() {
+  case "${_line}" in
+    *"${_ESC}["*)
+      # Drop ESC '[' then any parameter/intermediate bytes then a final letter
+      # or '~'. Repeat until no such sequence remains.
+      while :; do
+        case "${_line}" in
+          *"${_ESC}["*) ;;
+          *) break ;;
+        esac
+        _pre=${_line%%"${_ESC}["*}
+        _post=${_line#*"${_ESC}["}
+        # Trim leading params (digits, ';') and one final byte (letter or '~').
+        while :; do
+          case "${_post}" in
+            [0-9\;]*) _post=${_post#?} ;;
+            *) break ;;
+          esac
+        done
+        _post=${_post#?}   # drop the final command byte
+        _line="${_pre}${_post}"
+      done ;;
+  esac
+}
+
+# read_prompt — read one logical line of REPL input into $_line. A normal line is
+# returned as-is. A bracketed paste (multi-line) is accumulated across reads until
+# its end marker and returned as a single newline-joined string, so pasting many
+# lines yields ONE prompt instead of one-per-line. Returns non-zero at EOF.
+read_prompt() {
+  IFS= read -r _line || return 1
+  case "${_line}" in
+    "${_PASTE_BEG}"*)
+      # Strip the start marker; keep reading until the end marker appears.
+      _line=${_line#"${_PASTE_BEG}"}
+      while :; do
+        case "${_line}" in
+          *"${_PASTE_END}"*) _line=${_line%"${_PASTE_END}"*}; break ;;
+        esac
+        IFS= read -r _more || break
+        _line="${_line}
+${_more}"
+      done ;;
+    *)
+      # Typed line: scrub stray cursor-key / nav escapes so they don't pollute
+      # the message. (Pastes are handled above and left intact.)
+      strip_nav ;;
+  esac
+  return 0
+}
+
 # Default interactive mode: a dependency-free, line-based REPL. (harsh_tui.sh
 # is the richer fzf interface; this needs nothing beyond the core.)
 #
-# Line editing & history (up/down arrows, Ctrl-R search, persistent history) come
-# for free from rlwrap when it's installed: on an interactive TTY we transparently
-# re-exec ourselves under rlwrap once (HARSH_RLWRAP guards against re-entry). The
-# bare `read` loop below is the portable fallback when rlwrap is absent.
+# Input handling — why the native loop is the default:
+#   The native loop (read_prompt, below) puts the terminal in bracketed-paste
+#   mode (ESC[?2004h) and stitches a multi-line paste back into ONE prompt. This
+#   is the behaviour people expect when they paste a snippet.
+#
+#   rlwrap would give us ↑/↓ history and richer line editing "for free", but it
+#   CANNOT preserve a multi-line paste: rlwrap's readline accepts each pasted
+#   newline as a separate line, so a paste arrives as one-prompt-per-line — and
+#   its own man page warns that bracketed paste "will confuse rlwrap". No flag
+#   combination (-m, --multi-line-ext, enable-bracketed-paste) fixes this in
+#   rlwrap 0.48 / readline 8.3. Correct paste and rlwrap are mutually exclusive,
+#   so we default to correct paste.
+#
+#   rlwrap remains available as an explicit opt-in (HARSH_RLWRAP=1) for people
+#   who want history/editing and don't paste multi-line. HARSH_RLWRAP=1 both
+#   selects the rlwrap path AND guards against re-exec re-entry.
 cmd_repl() {
-  if [ -t 0 ] && [ -z "${HARSH_RLWRAP:-}" ] && [ "${HARSH_NO_RLWRAP:-}" != 1 ] \
+  if [ -t 0 ] && [ "${HARSH_RLWRAP:-}" = 1 ] && [ "${HARSH_NO_RLWRAP:-}" != 1 ] \
      && command -v rlwrap >/dev/null 2>&1; then
     _hist="${HARSH_LOG_DIR:-${SELF_DIR}/logs}/repl_history"
     mkdir -p "$(dirname "${_hist}")" 2>/dev/null || true
     # HARSH_CONFIG and the dir vars are already exported by load_config; carry the
-    # quiet flag too so the re-exec'd REPL behaves identically.
-    export HARSH_QUIET="${HARSH_QUIET:-}" HARSH_RLWRAP=1
+    # quiet flag too so the re-exec'd REPL behaves identically. HARSH_RLWRAP=2
+    # marks "already under rlwrap" so the re-exec'd child takes the native loop.
+    export HARSH_QUIET="${HARSH_QUIET:-}" HARSH_RLWRAP=2
     exec rlwrap -C harsh -H "${_hist}" -s 5000 \
       sh "${SELF_DIR}/harsh.sh" repl "$@"
   fi
@@ -551,18 +630,34 @@ cmd_repl() {
     printf '%s╶─ harsh %s · REPL · %s ─╴%s\n' "${C_BAR}" "${HARSH_VERSION}" "${_sess}" "${C_RST}" >&2
     if [ -n "${HARSH_RLWRAP:-}" ]; then
       printf '%sType a message and press Enter. ↑/↓ history, /help for commands, /quit to exit.%s\n' "${C_DIM}" "${C_RST}" >&2
+      printf '%s(rlwrap mode: multi-line pastes arrive one line per prompt — unset HARSH_RLWRAP for paste support)%s\n' "${C_DIM}" "${C_RST}" >&2
     else
       printf '%sType a message and press Enter. /help for commands, /quit to exit.%s\n' "${C_DIM}" "${C_RST}" >&2
-      command -v rlwrap >/dev/null 2>&1 || printf '%s(install rlwrap for ↑/↓ history and line editing)%s\n' "${C_DIM}" "${C_RST}" >&2
+      command -v rlwrap >/dev/null 2>&1 && printf '%s(set HARSH_RLWRAP=1 for ↑/↓ history and line editing — note: disables multi-line paste)%s\n' "${C_DIM}" "${C_RST}" >&2
     fi
     if [ -z "${HARSH_API_KEY}" ] && [ -z "${HARSH_MOCK:-}" ]; then
       printf '! No API key set — the agent cannot respond. Export ANTHROPIC_API_KEY,\n' >&2
       printf '! or set HARSH_MOCK=1 for an offline mock model.\n' >&2
     fi
+    # Ask the terminal to bracket pastes so a multi-line paste reads as ONE
+    # prompt (handled in read_prompt). Disabled again only when we exit — NOT on
+    # Ctrl-C, which must cancel the current line and keep the REPL running.
+    # Skip under rlwrap (HARSH_RLWRAP=2): rlwrap owns the TTY and bracketed paste
+    # "confuses rlwrap" (its words), so emitting it there only causes glitches.
+    if [ "${HARSH_RLWRAP:-}" != 2 ]; then
+      printf '\033[?2004h' >&2
+      # Clean up the terminal on real exit / kill only.
+      trap 'printf "\033[?2004l" >&2' EXIT TERM
+    fi
+    # Ctrl-C cancels the line in progress, like a normal shell: the tty discards
+    # the partial line, and this handler acknowledges the interrupt. The `read`
+    # it interrupted falls through to the loop top, which redraws the prompt, so
+    # we do NOT exit and we do NOT swallow the next line (no discard flag).
+    trap 'printf "%s^C — interrupted (Ctrl-D or /quit to exit)%s\n" "${C_DIM}" "${C_RST}" >&2' INT
   fi
   while :; do
     [ "${_tty}" = 1 ] && printf '%sharsh>%s ' "${C_USER}" "${C_RST}" >&2
-    IFS= read -r _line || break
+    read_prompt || break
     case "${_line}" in
       '') continue ;;
       /quit|/exit|/q) break ;;
@@ -622,7 +717,14 @@ cmd_repl() {
         cmd_send "${_sess}" "${_line}" && cmd_run "${_sess}" ;;
     esac
   done
-  [ "${_tty}" = 1 ] && printf '%s%s harsh · bye%s\n' "${C_DIM}" "${GUTTER}" "${C_RST}" >&2
+  if [ "${_tty}" = 1 ]; then
+    trap - INT
+    if [ "${HARSH_RLWRAP:-}" != 2 ]; then
+      printf '\033[?2004l' >&2        # leave bracketed-paste mode
+      trap - EXIT TERM
+    fi
+    printf '%s%s harsh · bye%s\n' "${C_DIM}" "${GUTTER}" "${C_RST}" >&2
+  fi
   return 0
 }
 

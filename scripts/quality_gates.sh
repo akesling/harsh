@@ -40,11 +40,22 @@ _any_shell=0
 for _shb in sh bash zsh dash ash busybox; do
   command -v "${_shb}" >/dev/null 2>&1 || continue
   _any_shell=1
-  _ok=1
+  _ok=1; _perr=""
   for _f in "$@"; do
-    "${_shb}" -n "${_f}" 2>/dev/null || { _ok=0; break; }
+    # busybox is a multi-call binary: `busybox -n FILE` reads -n as an applet
+    # name, not a flag — parse through its `sh` applet instead.
+    if [ "${_shb}" = busybox ]; then
+      _perr=$(busybox sh -n "${_f}" 2>&1) || { _ok=0; break; }
+    else
+      _perr=$("${_shb}" -n "${_f}" 2>&1) || { _ok=0; break; }
+    fi
   done
-  if [ "${_ok}" = 1 ]; then pass "${_shb}"; else bad "${_shb}: ${_f} failed to parse"; fi
+  if [ "${_ok}" = 1 ]; then
+    pass "${_shb}"
+  else
+    bad "${_shb}: ${_f} failed to parse"
+    [ -n "${_perr}" ] && printf '%s\n' "${_perr}" | sed 's/^/        /'
+  fi
 done
 [ "${_any_shell}" = 1 ] || bad "no POSIX shell found to parse with"
 

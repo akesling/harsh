@@ -62,6 +62,20 @@ test_edit_preserves_trailing_newline() {
   rm -rf "${_d}"
 }
 
+test_edit_preserves_file_mode() {
+  # Editing must not change the file's permissions. The tool used to mv a temp
+  # file over the target, which reset the mode (e.g. dropping a +x bit). It now
+  # writes back through the existing file, preserving its mode.
+  _d=$(mktemp -d); _f="${_d}/run.sh"; printf '#!/bin/sh\necho hi\n' > "${_f}"
+  chmod 755 "${_f}"
+  [ -x "${_f}" ] || fail 'precondition: file should be executable'
+  tool edit "$(jq -nc --arg p "${_f}" '{path:$p,old:"hi",new:"bye"}')" >/dev/null
+  [ -x "${_f}" ] || fail 'edit dropped the executable bit'
+  # And the content actually changed.
+  assert_contains "$(cat "${_f}")" 'bye'
+  rm -rf "${_d}"
+}
+
 test_edit_diff_can_be_disabled() {
   _d=$(mktemp -d); _f="${_d}/x.txt"; printf 'one\ntwo\n' > "${_f}"
   _disp="${_d}/disp"

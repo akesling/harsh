@@ -21,7 +21,7 @@ for _m in "${_d}"/*/manifest.csv; do
   _tf=""
   # shellcheck disable=SC2034
   while IFS=, read -r _seq _role _type _tname _file _ts _status; do
-    [ "${_role}" = user ] && [ "${_type}" = text ] || continue
+    { [ "${_role}" = user ] && [ "${_type}" = text ]; } || continue
     [ -f "${_sdir}/${_file}" ] || continue
     _ctx=$(jq -r '.meta.context // ""' "${_sdir}/${_file}" 2>/dev/null)
     [ -n "${_ctx}" ] && continue

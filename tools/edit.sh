@@ -47,7 +47,12 @@ if [ "${HARSH_EDIT_DIFF:-1}" != 0 ] && command -v diff >/dev/null 2>&1; then
     "${_path}" "${_new}" 2>/dev/null)
 fi
 
-mv "${_new}" "${_path}"
+# Write the result back through the EXISTING file rather than mv'ing the temp
+# over it: mv would replace the inode and so reset the file's mode/ownership to
+# the temp file's defaults (e.g. dropping a +x bit). Truncating the original in
+# place via redirection preserves its permissions, owner, and any hard links.
+cat "${_new}" > "${_path}"
+rm -f "${_new}"
 
 # stdout is the *model-facing* tool result — keep it terse. A full diff here
 # would burn context for no benefit (the model already knows what it asked to

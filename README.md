@@ -228,11 +228,20 @@ Ctrl-D). `/sessions` lists past conversations and `/resume <ID>` switches to
 one. Pass a session name to
 resume: `./harsh.sh repl my-session`.
 
-If [`rlwrap`](https://github.com/hanslub42/rlwrap) is installed, the REPL
-transparently runs under it for ↑/↓ history recall, line editing, and Ctrl-R
-search, with history persisted to `$HARSH_LOG_DIR/repl_history`. Without it the
-REPL still works — just without those line-editing niceties. Set
-`HARSH_NO_RLWRAP=1` to opt out. It also works non-interactively:
+By default the REPL uses its own input loop, which puts the terminal in
+bracketed-paste mode so that **pasting a multi-line snippet becomes a single
+prompt** (not one prompt per line). `Ctrl-C` cancels the line you are typing
+(use `Ctrl-D` or `/quit` to exit); stray cursor-key escapes are scrubbed so
+they don't end up in your message. This loop has no ↑/↓ history or line
+editing — those need readline.
+
+If you prefer ↑/↓ history recall, richer line editing, and Ctrl-R search, set
+`HARSH_RLWRAP=1` to run under [`rlwrap`](https://github.com/hanslub42/rlwrap)
+(if installed), with history persisted to `$HARSH_LOG_DIR/repl_history`. Note
+the trade-off: rlwrap cannot preserve a multi-line paste — it accepts each
+pasted line separately — so paste support and rlwrap are mutually exclusive.
+That is why the native, paste-correct loop is the default. It also works
+non-interactively:
 
 ```sh
 printf '%s\n' 'list the files' '/quit' | ./harsh.sh repl
