@@ -42,10 +42,12 @@ jobs:
         working-directory: site
         run: bun install --frozen-lockfile
 
-      - name: Unit tests
-        working-directory: site
-        run: bun test
-
+      # Build first: app.ts imports src/generated.json (an ignored artifact that
+      # build.ts produces), so the unit tests can't load without it.
       - name: Build
         working-directory: site
         run: bun run build
+
+      - name: Unit tests
+        working-directory: site
+        run: bun test
