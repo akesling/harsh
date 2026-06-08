@@ -18,6 +18,9 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Scope the Cloudflare credentials + any protection rules to the "site"
+    # deployment environment. Only deploy jobs run here; CI does not.
+    environment: site
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

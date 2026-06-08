@@ -22,6 +22,9 @@ jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    # Same "site" deployment environment as production — both deploys need its
+    # Cloudflare credentials. CI / preview-build do not run here.
+    environment: site
     steps:
       - name: Download preview artifact
         uses: actions/download-artifact@v4
