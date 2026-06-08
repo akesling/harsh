@@ -62,12 +62,27 @@ load_config() {
     . "${_cfg}"
     _config_file=${_cfg}
   fi
-  : "${HARSH_MODEL:=claude-opus-4-8}"
+  # Provider picks the wire format (anthropic Messages API | openai Chat
+  # Completions). Model, endpoint, and key-env default per provider; all are
+  # overridable in the config or environment.
+  : "${HARSH_PROVIDER:=anthropic}"
+  case "${HARSH_PROVIDER}" in
+    openai)
+      : "${HARSH_MODEL:=gpt-4o}"
+      : "${HARSH_API_URL:=https://api.openai.com/v1/chat/completions}"
+      HARSH_API_KEY=${HARSH_API_KEY:-${OPENAI_API_KEY:-}}
+      ;;
+    anthropic)
+      : "${HARSH_MODEL:=claude-opus-4-8}"
+      : "${HARSH_API_URL:=https://api.anthropic.com/v1/messages}"
+      HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
+      ;;
+    *) die "unknown HARSH_PROVIDER: ${HARSH_PROVIDER} (expected anthropic or openai)" ;;
+  esac
   : "${HARSH_MAX_TOKENS:=4096}"
-  # Prompt caching on by default — see build_request. Set 0 to disable.
-  : "${HARSH_CACHE:=1}"
-  : "${HARSH_API_URL:=https://api.anthropic.com/v1/messages}"
   : "${HARSH_API_VERSION:=2023-06-01}"
+  # Prompt caching (Anthropic only) on by default — see build_request. 0 disables.
+  : "${HARSH_CACHE:=1}"
   # Data directories must be set explicitly (config or env) — never inferred.
   for _v in HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR; do
     eval "_val=\${${_v}:-}"
@@ -80,13 +95,13 @@ load_config() {
   : "${HARSH_COMMANDS_DIR:=${SELF_DIR}/commands}"
   : "${HARSH_LIB_DIR:=${SELF_DIR}/lib}"
   : "${HARSH_SYSTEM_PROMPT:=You are a concise and capable assistant operating inside harsh, a coding agent harness. Prefer small, verifiable steps. When the task is complete, stop and summarize.}"
-  HARSH_API_KEY=${HARSH_API_KEY:-${ANTHROPIC_API_KEY:-}}
+  # (HARSH_API_KEY was resolved per-provider above.)
   # Expose the harness path and resolved config to tool subprocesses, so a tool
   # (e.g. tools/agent.sh) can re-invoke harsh for a sub-session with the same
   # config. HARSH_CONFIG is pinned to the loaded file so children don't re-discover.
   HARSH_SELF="${SELF_DIR}/harsh.sh"
   HARSH_CONFIG=${_config_file}
-  export HARSH_MODEL HARSH_MAX_TOKENS HARSH_CACHE HARSH_API_URL HARSH_API_VERSION \
+  export HARSH_PROVIDER HARSH_MODEL HARSH_MAX_TOKENS HARSH_CACHE HARSH_API_URL HARSH_API_VERSION \
          HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR \
          HARSH_HOOKS_DIR HARSH_COMMANDS_DIR HARSH_LIB_DIR \
          HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY \
@@ -280,11 +295,20 @@ call_api() {
     warn "[error] no API key set — export ANTHROPIC_API_KEY (or HARSH_API_KEY), or set HARSH_MOCK=1 for offline testing."
     return 1
   }
-  _resp=$(printf '%s' "${_req}" | curl -sS -X POST "${HARSH_API_URL}" \
-      -H "x-api-key: ${HARSH_API_KEY}" \
-      -H "anthropic-version: ${HARSH_API_VERSION}" \
-      -H "content-type: application/json" \
-      --data-binary @-) || { warn "[error] curl request to ${HARSH_API_URL} failed"; return 1; }
+  # Provider auth differs: OpenAI uses a Bearer token; Anthropic uses x-api-key
+  # plus the dated anthropic-version header.
+  if [ "${HARSH_PROVIDER}" = openai ]; then
+    _resp=$(printf '%s' "${_req}" | curl -sS -X POST "${HARSH_API_URL}" \
+        -H "authorization: Bearer ${HARSH_API_KEY}" \
+        -H "content-type: application/json" \
+        --data-binary @-) || { warn "[error] curl request to ${HARSH_API_URL} failed"; return 1; }
+  else
+    _resp=$(printf '%s' "${_req}" | curl -sS -X POST "${HARSH_API_URL}" \
+        -H "x-api-key: ${HARSH_API_KEY}" \
+        -H "anthropic-version: ${HARSH_API_VERSION}" \
+        -H "content-type: application/json" \
+        --data-binary @-) || { warn "[error] curl request to ${HARSH_API_URL} failed"; return 1; }
+  fi
   printf '%s\n' "${_resp}" >> "${HARSH_LOG_DIR}/${_base}.response.log"
   printf '%s' "${_resp}"
 }
@@ -293,35 +317,67 @@ call_api() {
 # message contains a [[tool:NAME:ARG]] marker. Lets the loop be smoke-tested.
 mock_api() {
   _req=$1
+  # The latest input to respond to is the last message — a user turn (Anthropic
+  # content is an array of blocks; OpenAI content is a string) or, after a tool
+  # ran, the tool result (Anthropic tool_result blocks carry no text; OpenAI is a
+  # role:"tool" string). Pulling only text means a post-tool turn yields "" and
+  # the mock stops instead of re-firing the tool. (Selecting role=="user" would
+  # miss OpenAI tool results, which are role:"tool", and loop forever.)
   _last=$(printf '%s' "${_req}" | jq -r '
-    [.messages[] | select(.role=="user")] | (.[-1].content // []) |
+    (.messages[-1].content // []) |
     if type=="array" then (map(select(.type=="text").text) | join(" ")) else (.|tostring) end')
   case "${_last}" in
     *'[[tool:'*']]'*)
       _spec=${_last#*'[[tool:'}; _spec=${_spec%%']]'*}
       _tname=${_spec%%:*}; _targs=${_spec#*:}
-      jq -n --arg n "${_tname}" --arg a "${_targs}" '{
-        content:[
-          {type:"text",text:("Calling tool " + $n)},
-          {type:"tool_use",id:"toolu_mock1",name:$n,
-           input:{command:$a,path:$a,pattern:$a,name:$a}}],
-        stop_reason:"tool_use"}' ;;
+      if [ "${HARSH_PROVIDER}" = openai ]; then
+        jq -n --arg n "${_tname}" --arg a "${_targs}" '{
+          id:"chatcmpl_mock1", model:"mock-openai",
+          choices:[{message:{role:"assistant", content:("Calling tool " + $n),
+            tool_calls:[{id:"call_mock1", type:"function",
+              function:{name:$n, arguments:({command:$a,path:$a,pattern:$a,name:$a}|tojson)}}]},
+            finish_reason:"tool_calls"}],
+          usage:{prompt_tokens:10, completion_tokens:5, prompt_tokens_details:{cached_tokens:0}}}'
+      else
+        jq -n --arg n "${_tname}" --arg a "${_targs}" '{
+          content:[
+            {type:"text",text:("Calling tool " + $n)},
+            {type:"tool_use",id:"toolu_mock1",name:$n,
+             input:{command:$a,path:$a,pattern:$a,name:$a}}],
+          stop_reason:"tool_use"}'
+      fi ;;
     *)
-      jq -n --arg t "[mock] You said: ${_last}" '{content:[{type:"text",text:$t}],stop_reason:"end_turn",
-        model:"mock-model", id:"msg_mock1", role:"assistant", type:"message",
-        usage:{input_tokens:10, output_tokens:5, cache_read_input_tokens:0, cache_creation_input_tokens:0}}' ;;
+      if [ "${HARSH_PROVIDER}" = openai ]; then
+        jq -n --arg t "[mock] You said: ${_last}" '{
+          id:"chatcmpl_mock1", model:"mock-openai",
+          choices:[{message:{role:"assistant", content:$t, tool_calls:null}, finish_reason:"stop"}],
+          usage:{prompt_tokens:10, completion_tokens:5, prompt_tokens_details:{cached_tokens:0}}}'
+      else
+        jq -n --arg t "[mock] You said: ${_last}" '{content:[{type:"text",text:$t}],stop_reason:"end_turn",
+          model:"mock-model", id:"msg_mock1", role:"assistant", type:"message",
+          usage:{input_tokens:10, output_tokens:5, cache_read_input_tokens:0, cache_creation_input_tokens:0}}'
+      fi ;;
   esac
 }
 
-# Build the Messages-API request body from assembled messages + tool schemas.
-# With HARSH_CACHE on (default), inserts cache_control breakpoints so the model
-# bills the repeated prefix at the cache-read rate (~0.1x) on later turns
-# instead of full price every call. Render order is tools->system->messages, so
-# one breakpoint on the system block covers tools+system (the large stable
-# prefix); a second on the final message caches the conversation so far. Without
-# this, an N-step agentic turn re-sends and re-bills the whole prefix N times.
-# Keep the jq body in sync with commands/request.sh.
+# Build the wire request from harsh's canonical (Anthropic-shaped) assembled
+# messages + tool schemas, in the configured provider's format. The `request`
+# command shells back to `build-request` so it always matches what `step` sends.
 build_request() {
+  case "${HARSH_PROVIDER}" in
+    openai) build_request_openai "$1" "$2" ;;
+    *)      build_request_anthropic "$1" "$2" ;;
+  esac
+}
+
+# Anthropic Messages API. With HARSH_CACHE on (default), inserts cache_control
+# breakpoints so the model bills the repeated prefix at the cache-read rate
+# (~0.1x) on later turns instead of full price every call. Render order is
+# tools->system->messages, so one breakpoint on the system block covers
+# tools+system (the large stable prefix); a second on the final message caches
+# the conversation so far. Without it, an N-step agentic turn re-bills the whole
+# prefix N times.
+build_request_anthropic() {
   _bmsgs=$1; _btools=$2
   _bcache=true; case "${HARSH_CACHE:-1}" in 0|no|off|'') _bcache=false ;; esac
   jq -n --arg model "${HARSH_MODEL}" --argjson max "${HARSH_MAX_TOKENS}" \
@@ -341,6 +397,76 @@ build_request() {
     }'
 }
 
+# OpenAI Chat Completions. Translates the canonical messages into OpenAI's shape:
+# system prompt as a leading system message; each assistant tool_use becomes a
+# tool_calls entry; each tool_result becomes a separate {role:"tool"} message
+# linked by tool_call_id; tools wrap as {type:"function", function:{...}}. OpenAI
+# caches prefixes automatically, so HARSH_CACHE does not apply here.
+build_request_openai() {
+  _bmsgs=$1; _btools=$2
+  jq -n --arg model "${HARSH_MODEL}" --argjson max "${HARSH_MAX_TOKENS}" \
+        --arg sys "${HARSH_SYSTEM_PROMPT}" --argjson tools "${_btools}" \
+        --argjson msgs "${_bmsgs}" '
+    def oa_msgs:
+      reduce .[] as $m ([];
+        if $m.role == "assistant" then
+          . + [ ( {role:"assistant"}
+                  + ( ($m.content | map(select(.type=="text").text) | join("")) as $t
+                      | if ($t|length)>0 then {content:$t} else {content:null} end )
+                  + ( ($m.content | map(select(.type=="tool_use")
+                          | {id:.id, type:"function",
+                             function:{name:.name, arguments:(.input|tojson)}})) as $c
+                      | if ($c|length)>0 then {tool_calls:$c} else {} end ) ) ]
+        elif ($m.content | any(.type=="tool_result")) then
+          . + ($m.content | map(
+                if .type=="tool_result"
+                then {role:"tool", tool_call_id:.tool_use_id,
+                      content:(.content | if type=="string" then . else tojson end)}
+                elif .type=="text" then {role:"user", content:.text}
+                else empty end))
+        else
+          . + [ {role:"user", content: ($m.content | map(select(.type=="text").text) | join(""))} ]
+        end);
+    ( {model:$model, max_completion_tokens:$max,
+       messages: ([{role:"system", content:$sys}] + ($msgs | oa_msgs))}
+      + ( ($tools | map({type:"function",
+                         function:{name:.name, description:.description, parameters:.input_schema}})) as $ot
+          | if ($ot|length)>0 then {tools:$ot} else {} end) )'
+}
+
+# Normalize a provider response into the canonical Anthropic shape
+# ({content:[blocks], stop_reason, usage, ...}) that cmd_step consumes, reading
+# the raw response on stdin. Anthropic is already canonical (pass through); for
+# OpenAI, map choices[0].message -> text/tool_use blocks and finish_reason ->
+# stop_reason. Error bodies (no choices) pass through so the error path still
+# finds .error.message.
+normalize_response() {
+  case "${HARSH_PROVIDER}" in
+    openai)
+      jq -c 'if has("choices") then
+          (.choices[0]) as $c |
+          { content:
+              ( ( if (($c.message.content // "") | length) > 0
+                  then [{type:"text", text:$c.message.content}] else [] end )
+                + ( ($c.message.tool_calls // []) | map(
+                      {type:"tool_use", id:.id, name:.function.name,
+                       input:(.function.arguments | (try fromjson catch {}))}) ) ),
+            stop_reason: ( $c.finish_reason
+                           | if .=="tool_calls" then "tool_use"
+                             elif .=="stop" then "end_turn"
+                             elif .=="length" then "max_tokens"
+                             else (. // "end_turn") end ),
+            model: .model, id: .id,
+            usage: ( (.usage // {}) | {
+                       input_tokens: (.prompt_tokens // 0),
+                       output_tokens: (.completion_tokens // 0),
+                       cache_read_input_tokens: (.prompt_tokens_details.cached_tokens // 0),
+                       cache_creation_input_tokens: 0 } ) }
+        else . end' ;;
+    *) cat ;;
+  esac
+}
+
 # One model turn. Appends assistant blocks; if the model asked for tools, runs
 # them and appends tool_result blocks.
 # returns: 0 = finished, 2 = tool_use (caller should continue), 1 = error.
@@ -351,6 +477,9 @@ cmd_step() {
   _tools=$(sh "${HARSH_TOOLS_DIR}/tool.sh" schemas 2>/dev/null); [ -n "${_tools}" ] || _tools='[]'
   _req=$(build_request "${_msgs}" "${_tools}")
   _resp=$(call_api "${_req}" "${_dir}") || return 1
+  # Fold the provider response into the canonical shape the rest of this
+  # function expects (content blocks + stop_reason + usage meta).
+  _resp=$(printf '%s' "${_resp}" | normalize_response)
 
   if [ "$(printf '%s' "${_resp}" | jq -r 'has("content")')" != "true" ]; then
     _emsg=$(printf '%s' "${_resp}" | jq -r '.error.message // .message // "unknown API error"')
@@ -763,9 +892,11 @@ EOF
   cat <<EOF
 
 Environment / config (see harsh.conf):
-  HARSH_API_KEY / ANTHROPIC_API_KEY, HARSH_MODEL, HARSH_MAX_TOKENS,
-  HARSH_SYSTEM_PROMPT, HARSH_MAX_TURNS, HARSH_MOCK (offline test mode),
-  HARSH_CACHE (prompt caching, on by default; 0 to disable),
+  HARSH_PROVIDER (anthropic | openai; default anthropic),
+  HARSH_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY, HARSH_MODEL,
+  HARSH_MAX_TOKENS, HARSH_SYSTEM_PROMPT, HARSH_MAX_TURNS,
+  HARSH_MOCK (offline test mode),
+  HARSH_CACHE (Anthropic prompt caching, on by default; 0 to disable),
   HARSH_VERBOSE (print full tool output instead of a collapsed summary).
   Directories (set in harsh.conf, absolute): HARSH_TOOLS_DIR, HARSH_SKILLS_DIR,
   HARSH_HOOKS_DIR, HARSH_COMMANDS_DIR, HARSH_SESSIONS_DIR, HARSH_LOG_DIR.
@@ -799,6 +930,12 @@ case "${_cmd}" in
   skill)    cmd_skill "$@" ;;
   assemble) cmd_assemble "$@" ;;
   path)     cmd_path "$@" ;;
+  # Print the wire request a step would send (used by commands/request.sh so the
+  # provider-specific builder lives in exactly one place).
+  build-request)
+    _m=$(cmd_assemble "$1")
+    _t=$(sh "${HARSH_TOOLS_DIR}/tool.sh" schemas 2>/dev/null); [ -n "${_t}" ] || _t='[]'
+    build_request "${_m}" "${_t}" ;;
   # --- meta -----------------------------------------------------------------
   commands) list_commands "$@" | sort ;;
   help|-h|--help) usage ;;

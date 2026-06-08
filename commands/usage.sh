@@ -21,13 +21,17 @@ case "${HARSH_MODEL}" in
 esac
 
 jq -rs --argjson in "${_in}" --argjson out "${_out}" --arg model "${HARSH_MODEL}" '
-  def z: . // 0;
   def r4: (. * 10000 | round) / 10000;
+  # Coalesce Anthropic and OpenAI usage field names.
+  def inp:  (.input_tokens // .prompt_tokens // 0);
+  def outp: (.output_tokens // .completion_tokens // 0);
+  def crd:  (.cache_read_input_tokens // .prompt_tokens_details.cached_tokens // 0);
+  def cwr:  (.cache_creation_input_tokens // 0);
   [ .[] | .usage // empty ] as $u
-  | ([ $u[].input_tokens | z ] | add // 0)            as $input
-  | ([ $u[].cache_read_input_tokens | z ] | add // 0) as $cr
-  | ([ $u[].cache_creation_input_tokens | z ] | add // 0) as $cw
-  | ([ $u[].output_tokens | z ] | add // 0)           as $output
+  | ([ $u[] | inp ]  | add // 0) as $input
+  | ([ $u[] | crd ]  | add // 0) as $cr
+  | ([ $u[] | cwr ]  | add // 0) as $cw
+  | ([ $u[] | outp ] | add // 0) as $output
   | ($input + $cr + $cw)                              as $ptotal
   | ((($input * $in) + ($cr * $in * 0.1) + ($cw * $in * 1.25) + ($output * $out)) / 1000000) as $cost
   | ((($ptotal * $in) + ($output * $out)) / 1000000)  as $uncached

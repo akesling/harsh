@@ -57,6 +57,28 @@ seq,role,type,name,file,timestamp,status
 A process interested in marginal additions can simply `tail -f manifest.csv`
 and react to each new line.
 
+### Providers (Anthropic · OpenAI)
+
+`HARSH_PROVIDER` selects the API: `anthropic` (Claude Messages API, the default)
+or `openai` (Chat Completions). Switching is usually one line — model, endpoint,
+and key env all default per provider (`claude-opus-4-8` + `ANTHROPIC_API_KEY`, or
+`gpt-4o` + `OPENAI_API_KEY`):
+
+```sh
+HARSH_PROVIDER=openai OPENAI_API_KEY=sk-... ./harsh.sh
+```
+
+Sessions stay in **one canonical (Anthropic-shaped) on-disk format** regardless
+of provider; the provider layer translates only at the wire edge. Two jq
+transforms isolate the difference — `build_request` renders the canonical
+messages into the provider's request shape (OpenAI: a leading `system` message,
+`tool_use`→`tool_calls`, each `tool_result`→a linked `role:"tool"` message,
+tools wrapped as `{type:"function"}`), and `normalize_response` folds the
+provider's reply back into canonical `content` blocks — so assembly, tools,
+hooks, rendering, and storage are provider-agnostic. Anthropic prompt caching
+(`HARSH_CACHE`) is a no-op under OpenAI (it caches automatically). `harsh.sh
+usage` understands both providers' token-usage fields.
+
 ### Tools
 
 Every tool is an executable `tools/NAME.sh` that:
