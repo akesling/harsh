@@ -287,7 +287,6 @@ function emacsKeydown(e: KeyboardEvent): boolean {
       case "k": pasteBuffer = v.slice(c); setInput(killToEnd(v, c)); break;
       case "u": pasteBuffer = v.slice(0, c); setInput(killToStart(v, c)); break;
       case "w": { const r = killWordBack(v, c); pasteBuffer = v.slice(r.cur, c); setInput(r); break; }
-      case "d": setInput(deleteCharFwd(v, c)); break;
       case "y": pasteInput(pasteBuffer); break;           // yank (paste) the buffer
       case "p": histPrev(); break;
       case "n": histNext(); break;
@@ -433,7 +432,7 @@ function buildConsole(idx: { files: any[] }) {
       `<span class="con-prompt" id="con-prompt"></span>` +
       `<input class="con-input" id="con-input" spellcheck="false" autocomplete="off" ` +
         `autocapitalize="off" autocorrect="off" placeholder="ls · cd tools · open harsh.sh · grep hook · help">` +
-      `<button class="con-toggle" id="con-toggle" title="Toggle terminal (\`)">&#9662;</button>` +
+      `<button class="con-toggle" id="con-toggle" title="Close terminal (^d on empty prompt, or \`)">&#9662;</button>` +
     `</div>` +
     `<div class="con-status" id="con-status"></div>`;
   document.querySelector(".topbar")!.insertAdjacentElement("afterend", conEl);
@@ -460,7 +459,7 @@ function buildConsole(idx: { files: any[] }) {
     const d = (e.target as HTMLElement).closest("[data-cd]");
     if (d) { e.preventDefault(); conInput.value = ""; runCommand("cd " + d.getAttribute("data-cd")); runCommand("ls"); }
   });
-  conPut(`<span class="con-dim">harsh source tour. Type <b>help</b>, or <b>ls</b> to look around. <b>^a [</b> (or <b>Esc</b>) = vi copy mode · <b>\`</b> toggles.</span>`);
+  conPut(`<span class="con-dim">harsh source tour. Type <b>help</b>, or <b>ls</b> to look around. <b>^a [</b> (or <b>Esc</b>) = vi copy mode · <b>\`</b> opens · <b>^d</b> closes.</span>`);
 }
 
 function buildVFS(files: any[]) {
@@ -516,10 +515,14 @@ function onConsoleKey(e: KeyboardEvent) {
     prefixTimer = setTimeout(disarmPrefix, 2500);
     return;
   }
-  // backtick dismisses the terminal from the prompt too (the commands here never
-  // need a literal `). stopPropagation so the document-level ` handler doesn't
-  // re-toggle after this blurs the input. Reopen with the same key when unfocused.
-  if (e.key === "`") { e.preventDefault(); e.stopPropagation(); toggleConsole(); return; }
+  // Ctrl-D — shell EOF: closes the terminal on an empty prompt, otherwise it's
+  // emacs delete-char-forward. (` stays a literal character you can type.)
+  if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "d") {
+    e.preventDefault();
+    if (conInput.value === "") closeConsole();
+    else setInput(deleteCharFwd(conInput.value, caret()));
+    return;
+  }
 
   // mode-specific line editing
   if (inputMode === "vi" ? viKeydown(e) : emacsKeydown(e)) return;
@@ -599,7 +602,7 @@ function cmdHelp() {
     "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e · x D C · dd dw · p P · i a A I · k/j history",
     "  <b>vi page</b> (when not typing): <b>j/k</b> scroll · <b>^d/^u</b> half-page · <b>gg/G</b> top/bottom",
     "",
-    "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> toggles · <b>⌘K</b> jump palette",
+    "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> opens · <b>^d</b> closes (empty prompt) · <b>⌘K</b> palette",
   ].join("\n"));
 }
 
