@@ -516,6 +516,10 @@ function onConsoleKey(e: KeyboardEvent) {
     prefixTimer = setTimeout(disarmPrefix, 2500);
     return;
   }
+  // backtick dismisses the terminal from the prompt too (the commands here never
+  // need a literal `). stopPropagation so the document-level ` handler doesn't
+  // re-toggle after this blurs the input. Reopen with the same key when unfocused.
+  if (e.key === "`") { e.preventDefault(); e.stopPropagation(); toggleConsole(); return; }
 
   // mode-specific line editing
   if (inputMode === "vi" ? viKeydown(e) : emacsKeydown(e)) return;
@@ -697,11 +701,11 @@ function cmdGrep(q: string) {
 }
 
 function openConsole() { conEl.classList.add("open"); }
-function closeConsole() { if (copyMode && copyMode.active) copyMode.exit(); conEl.classList.remove("open"); }
+function closeConsole() { if (copyMode && copyMode.active) copyMode.exit(); conEl.classList.remove("open"); conInput && conInput.blur(); }
 function toggleConsole() {
   if (copyMode && copyMode.active) copyMode.exit();
   conEl.classList.toggle("open");
-  if (conEl.classList.contains("open")) conInput.focus();
+  if (conEl.classList.contains("open")) conInput.focus(); else conInput.blur();
 }
 function scrollBottom() { conScroll.scrollTop = conScroll.scrollHeight; }
 
