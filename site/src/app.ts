@@ -209,7 +209,7 @@ function buildTopbar() {
     `<div class="spacer"></div>` +
     `<button class="btn mode-badge" id="input-mode" title="Input keymap — click to toggle vi / emacs"></button>` +
     `<button class="btn" id="toggle-console" title="Toggle terminal (\`)">&#10095;_ <kbd>&#96;</kbd></button>` +
-    `<button class="btn" id="open-palette">Jump to&hellip; <kbd>&#8984;K</kbd></button>` +
+    `<button class="btn" id="open-palette">Jump to&hellip; <kbd>${PALETTE_KEY}</kbd></button>` +
     `<button class="btn" id="toggle-theme" title="Toggle theme">&#9681;</button>` +
     `<a class="iconlink" id="repo-link" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="View on GitHub">${octocat}</a>`;
   body.prepend(bar);
@@ -414,7 +414,10 @@ function buildLayout() {
 let conEl: HTMLElement, conScroll: HTMLElement, conInput: HTMLInputElement, conPrompt: HTMLElement, conStatus: HTMLElement;
 let copyMode: CopyMode;
 let prefixArmed = false, prefixTimer: any = null;   // tmux Ctrl+a leader
-let inputMode: "emacs" | "vi" = "emacs";            // prompt editing keymap
+// Palette keycap: ⌘K on macOS, ^K (Ctrl+K) elsewhere — the page uses ^ for Ctrl.
+const PALETTE_KEY = (typeof navigator !== "undefined" &&
+  /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent || "")) ? "⌘K" : "^K";
+let inputMode: "emacs" | "vi" = "vi";               // prompt editing keymap (default; saved pref overrides on load)
 let viInsert = true;                                // vi sub-mode (insert vs normal)
 let viPending = "";                                 // vi operator pending (d / c)
 let viFindPending = "";                             // vi f/F/t/T awaiting target char
@@ -624,7 +627,7 @@ function cmdHelp() {
     "  <b>vi</b>: Esc → command — h l 0 ^ $ · w b e / W B E · f F t T ; , · x D C · dd dw cw · p P · i a A I",
     "  <b>vi page</b> (when not typing): <b>j/k</b> scroll · <b>^d/^u</b> half-page · <b>gg/G</b> top/bottom",
     "",
-    "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> opens · <b>^d</b> closes (empty prompt) · <b>⌘K</b> palette",
+    "shortcuts: <b>Tab</b> completes · <b>↑/↓</b> history · <b>`</b> opens · <b>^d</b> closes (empty prompt) · <b>" + PALETTE_KEY + "</b> palette",
   ].join("\n"));
 }
 
