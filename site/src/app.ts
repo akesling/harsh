@@ -517,8 +517,10 @@ function onConsoleKey(e: KeyboardEvent) {
   }
   // Ctrl-D — shell EOF: closes the terminal on an empty prompt, otherwise it's
   // emacs delete-char-forward. (` stays a literal character you can type.)
+  // stopPropagation so closing (which blurs the prompt) doesn't let the
+  // document-level handler treat this same ^d as a page scroll.
   if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "d") {
-    e.preventDefault();
+    e.preventDefault(); e.stopPropagation();
     if (conInput.value === "") closeConsole();
     else setInput(deleteCharFwd(conInput.value, caret()));
     return;
