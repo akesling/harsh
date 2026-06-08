@@ -4,6 +4,14 @@ import {
   firstNonBlank, selectionText, prefixCommand, findChar, CopyMode,
 } from "./copymode.ts";
 
+test("approved intra-word symbols: - is part of a word, . is not", () => {
+  expect(cls("-")).toBe("word");
+  expect(cls("_")).toBe("word");
+  expect(cls(".")).toBe("punct");
+  expect(wordFwd("--kebab-flag x", 0)).toBe(13);   // whole flag is one word -> 'x'
+  expect(wordFwd("a.b c", 0)).toBe(1);             // '.' still splits -> the '.'
+});
+
 test("WORD motions (big=true) treat punctuation as part of the word", () => {
   const t = "foo.bar baz";
   expect(wordFwd(t, 0)).toBe(3);          // w -> the '.'

@@ -27,10 +27,15 @@ export function prefixCommand(key: string): PrefixAction | null {
   }
 }
 
+// "Approved" intra-word symbols (vim's iskeyword): letters/digits plus these
+// count as part of a *word* for w/e/b, so identifiers and flags like snake_case
+// and --kebab-flag stay one word. Genuine separators (. / : etc.) remain their
+// own punctuation run, so w still stops at them while W jumps the whole WORD.
+export const WORD_SYMBOLS = "_-";
 export const cls = (ch: string | undefined): "blank" | "word" | "punct" =>
   ch === undefined || ch === "" ? "blank"
     : /\s/.test(ch) ? "blank"
-    : /[A-Za-z0-9_]/.test(ch) ? "word"
+    : (/[A-Za-z0-9]/.test(ch) || WORD_SYMBOLS.includes(ch)) ? "word"
     : "punct";
 
 // Flatten lines into a single string (newline-joined) plus the start index of
