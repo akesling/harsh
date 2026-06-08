@@ -5,7 +5,8 @@
 #   scripts/quality_gates.sh           run all gates
 #
 # Gates: shellcheck (POSIX sh) · syntax parse across installed shells ·
-#        tool schema validity · a hermetic end-to-end mock loop.
+#        tool schema validity · a hermetic end-to-end mock loop · the site's
+#        Bun unit tests (deps auto-installed; skipped when bun/site are absent).
 set -u
 if [ -n "${ZSH_VERSION:-}" ]; then
   emulate sh 2>/dev/null || setopt sh_word_split 2>/dev/null || true
@@ -82,6 +83,34 @@ if [ "${_rc}" = 0 ]; then
 else
   bad "test failures:"
   printf '%s\n' "${_out}" | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+# The source-tour site (site/) is a Bun/TypeScript project with its own unit
+# tests. Run them when bun and site/ are both present; otherwise skip, so the
+# shell-only gate still runs anywhere. Fresh clones have no node_modules, so
+# install first — --frozen-lockfile matches CI and refuses to mutate bun.lock,
+# making a stale lockfile fail loudly. Output is shown only on failure.
+section "site unit tests (bun)"
+if [ ! -f site/package.json ]; then
+  skip "no site/ project"
+elif ! command -v bun >/dev/null 2>&1; then
+  skip "bun not installed"
+else
+  _bout=$( (cd site && bun install --frozen-lockfile) 2>&1 ); _brc=$?
+  if [ "${_brc}" != 0 ]; then
+    bad "bun install failed:"
+    printf '%s\n' "${_bout}" | sed 's/^/    /'
+  else
+    _bout=$( (cd site && bun test) 2>&1 ); _brc=$?
+    if [ "${_brc}" = 0 ]; then
+      _bsum=$(printf '%s\n' "${_bout}" | grep -iE 'ran [0-9]+ test|[0-9]+ pass' | tail -1)
+      pass "${_bsum:-bun test passed}"
+    else
+      bad "site test failures:"
+      printf '%s\n' "${_bout}" | sed 's/^/    /'
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------

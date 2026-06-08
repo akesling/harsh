@@ -302,11 +302,17 @@ run `harsh.sh usage SESSION` to see the hit rate and what it saved.
 
 ```sh
 tests/run.sh                 # hermetic test suite (jq only; HARSH_MOCK, offline)
-scripts/quality_gates.sh     # shellcheck + cross-shell parse + schemas + tests
+scripts/quality_gates.sh     # shellcheck + cross-shell parse + schemas + tests + site
 ```
 
 Every test runs in its own tempdir with a sandbox config, so a run never
 touches the real `sessions/`, `logs/`, or `hooks/`. See `tests/README.md`.
+
+`quality_gates.sh` also runs the source-tour site's Bun unit tests when `bun`
+is installed — installing `site/`'s deps automatically (`bun install
+--frozen-lockfile`), so a fresh clone needs no manual setup. The shell gates
+stay dependency-light: the site step skips cleanly when `bun` (or `site/`) is
+absent, exactly like the shellcheck step skips without shellcheck.
 
 Contributing conventions (deps, portability, shell variable style, the
 quality gate) live in [`STYLE.md`](STYLE.md).

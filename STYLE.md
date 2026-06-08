@@ -56,6 +56,9 @@ Every change must keep `scripts/quality_gates.sh` green:
   severity — info counts).
 - Parses under every installed shell.
 - Tool schemas valid; the hermetic test suite passes.
+- The `site/` Bun unit tests pass when `bun` is installed (the gate runs
+  `bun install --frozen-lockfile` first, so a stale `bun.lock` fails loudly).
+  Optional dep: the step skips cleanly when `bun`/`site/` are absent.
 
 Add a `tests/<area>_test.sh` with `test_*` functions for new behavior. The runner
 is hermetic (per-test tempdir) — never touch the real `sessions/` or `logs/`.
