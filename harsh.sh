@@ -48,6 +48,9 @@ say()  { [ -n "${HARSH_QUIET:-}" ] || printf '%s\n' "$*"; }
 # whose stdout is captured by the caller).
 warn() { printf '%s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# jqv VALUE [jq-args...] — run jq over a JSON VALUE held in a shell variable,
+# instead of the noisy `printf '%s' "$x" | jq …` at every call site.
+jqv() { _jqv=$1; shift; printf '%s' "${_jqv}" | jq "$@"; }
 
 load_config() {
   export SELF_DIR   # so config files can reference it: HARSH_TOOLS_DIR="$SELF_DIR/tools"
@@ -323,7 +326,7 @@ mock_api() {
   # role:"tool" string). Pulling only text means a post-tool turn yields "" and
   # the mock stops instead of re-firing the tool. (Selecting role=="user" would
   # miss OpenAI tool results, which are role:"tool", and loop forever.)
-  _last=$(printf '%s' "${_req}" | jq -r '
+  _last=$(jqv "${_req}" -r '
     (.messages[-1].content // []) |
     if type=="array" then (map(select(.type=="text").text) | join(" ")) else (.|tostring) end')
   case "${_last}" in
@@ -467,8 +470,51 @@ normalize_response() {
   esac
 }
 
+# Run one tool_use block end to end: PreToolUse gate, execute the tool (with a
+# private fd-3 display channel), PostToolUse feedback, then store and render the
+# tool_result. Called once per block inside cmd_step's `while read` subshell.
+#   do_tool_call SESSION_DIR TOOL_USE_JSON
+do_tool_call() {
+  _d=$1; _t=$2
+  _id=$(jqv "${_t}" -r '.id'); _name=$(jqv "${_t}" -r '.name'); _input=$(jqv "${_t}" -c '.input')
+  # PreToolUse — a hook may deny the call (exit 2); its reason is fed back to the
+  # model as the (error) tool_result, and the tool is not run.
+  _prepay=$(jq -nc --arg e PreToolUse --arg s "${_d}" --arg n "${_name}" --argjson in "${_input}" \
+            '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in}')
+  _disp=""
+  if _reason=$(run_hooks PreToolUse "${_prepay}" "${_name}"); then
+    # fd 3 is a display side-channel: a tool can write rich, human-only output
+    # there (e.g. edit's colored diff) that we show the user but never feed back
+    # to the model. Captured to a temp file, separate from stdout (the
+    # model-facing tool_result).
+    _disp=$(mktemp 2>/dev/null || echo "/tmp/harsh_disp.$$")
+    _out=$(printf '%s' "${_input}" | sh "${HARSH_TOOLS_DIR}/tool.sh" call "${_name}" 2>&1 3>"${_disp}"); _rc=$?
+    _err=true; [ "${_rc}" -eq 0 ] && _err=false
+    # PostToolUse — feedback (if any) is appended to the tool output.
+    _postpay=$(jq -nc --arg e PostToolUse --arg s "${_d}" --arg n "${_name}" \
+              --argjson in "${_input}" --arg o "${_out}" --argjson er "${_err}" \
+              '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in,tool_output:$o,is_error:$er}')
+    _fb=$(run_hooks PostToolUse "${_postpay}" "${_name}") || true
+    [ -n "${_fb}" ] && _out="${_out}
+[hook] ${_fb}"
+  else
+    say "${C_TOOL}⛔ ${_name} blocked by hook:${C_RST} ${_reason}"
+    _out="Tool call blocked by hook: ${_reason}"; _err=true
+  fi
+  _block=$(jq -nc --arg id "${_id}" --arg out "${_out}" --argjson e "${_err}" \
+    '{type:"tool_result", tool_use_id:$id, content:$out, is_error:$e}')
+  _rseq=$(next_seq "${_d}")   # the #handle for `verbose`, captured before the write
+  add_entry "${_d}" user tool_result "${_name}" "${_block}"
+  [ -n "${HARSH_QUIET:-}" ] || render_tool_result "${_rseq}" "${_name}" "${_input}" "${_out}" "${_err}"
+  # Show the fd-3 display channel to the user only (never the model's context).
+  if [ -z "${HARSH_QUIET:-}" ] && [ -n "${_disp}" ] && [ -s "${_disp}" ]; then
+    sed 's/^/  /' "${_disp}"
+  fi
+  [ -n "${_disp}" ] && rm -f "${_disp}"
+}
+
 # One model turn. Appends assistant blocks; if the model asked for tools, runs
-# them and appends tool_result blocks.
+# them (do_tool_call) and appends tool_result blocks.
 # returns: 0 = finished, 2 = tool_use (caller should continue), 1 = error.
 cmd_step() {
   _dir=$(session_dir "$1")
@@ -481,9 +527,8 @@ cmd_step() {
   # function expects (content blocks + stop_reason + usage meta).
   _resp=$(printf '%s' "${_resp}" | normalize_response)
 
-  if [ "$(printf '%s' "${_resp}" | jq -r 'has("content")')" != "true" ]; then
-    _emsg=$(printf '%s' "${_resp}" | jq -r '.error.message // .message // "unknown API error"')
-    warn "[error] ${_emsg}"
+  if [ "$(jqv "${_resp}" -r 'has("content")')" != "true" ]; then
+    warn "[error] $(jqv "${_resp}" -r '.error.message // .message // "unknown API error"')"
     return 1
   fi
 
@@ -491,70 +536,22 @@ cmd_step() {
   # blocks themselves): usage/token counts, stop_reason, model, id, etc. We
   # attach it to this turn's first assistant block so it's preserved in the
   # session record; cmd_assemble drops it when building the API request.
-  _meta=$(printf '%s' "${_resp}" | jq -c 'del(.content, .role, .type)')
+  _meta=$(jqv "${_resp}" -c 'del(.content, .role, .type)')
 
-  _n=$(printf '%s' "${_resp}" | jq '.content | length')
+  # Record each assistant content block; the turn meta rides the first one. Tool
+  # calls render with their result (do_tool_call) below; here we show prose only.
   _i=0
-  while [ "${_i}" -lt "${_n}" ]; do
-    _block=$(printf '%s' "${_resp}" | jq -c ".content[${_i}]")
-    _btype=$(printf '%s' "${_block}" | jq -r '.type')
-    _bname=$(printf '%s' "${_block}" | jq -r '.name // ""')
-    if [ "${_i}" -eq 0 ]; then
-      add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}" "${_meta}"
-    else
-      add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}"
-    fi
-    # Tool calls render with their result in the loop below; here, just prose.
-    case "${_btype}" in
-      text) [ -n "${HARSH_QUIET:-}" ] || render_assistant "$(printf '%s' "${_block}" | jq -r '.text')" ;;
-    esac
+  jqv "${_resp}" -c '.content[]' | while IFS= read -r _block; do
+    _btype=$(jqv "${_block}" -r '.type'); _bname=$(jqv "${_block}" -r '.name // ""')
+    if [ "${_i}" -eq 0 ]; then _m=${_meta}; else _m=""; fi
+    add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}" "${_m}"
+    [ "${_btype}" = text ] && [ -z "${HARSH_QUIET:-}" ] && render_assistant "$(jqv "${_block}" -r '.text')"
     _i=$((_i + 1))
   done
 
-  _stop=$(printf '%s' "${_resp}" | jq -r '.stop_reason // ""')
-  if [ "${_stop}" = tool_use ]; then
-    printf '%s' "${_resp}" | jq -c '.content[] | select(.type=="tool_use")' | while IFS= read -r _tu; do
-      _id=$(printf '%s' "${_tu}"    | jq -r '.id')
-      _name=$(printf '%s' "${_tu}"  | jq -r '.name')
-      _input=$(printf '%s' "${_tu}" | jq -c '.input')
-      # PreToolUse — a hook may deny the call (exit 2); its reason is fed back to
-      # the model as the (error) tool_result, and the tool is not run.
-      _prepay=$(jq -nc --arg e PreToolUse --arg s "${_dir}" --arg n "${_name}" --argjson in "${_input}" \
-                '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in}')
-      _disp=   # reset per iteration (the while-read loop reuses variables)
-      if _reason=$(run_hooks PreToolUse "${_prepay}" "${_name}"); then
-        # fd 3 is a display side-channel: a tool can write rich, human-only
-        # output there (e.g. edit's colored diff) that we show the user but
-        # never feed back to the model. Captured to a temp file so it stays
-        # separate from stdout (the model-facing tool_result).
-        _disp=$(mktemp 2>/dev/null || echo "/tmp/harsh_disp.$$")
-        _out=$(printf '%s' "${_input}" | sh "${HARSH_TOOLS_DIR}/tool.sh" call "${_name}" 2>&1 3>"${_disp}"); _rc=$?
-        _err=true; [ "${_rc}" -eq 0 ] && _err=false
-        # PostToolUse — feedback (if any) is appended to the tool output.
-        _postpay=$(jq -nc --arg e PostToolUse --arg s "${_dir}" --arg n "${_name}" \
-                  --argjson in "${_input}" --arg o "${_out}" --argjson er "${_err}" \
-                  '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in,tool_output:$o,is_error:$er}')
-        _fb=$(run_hooks PostToolUse "${_postpay}" "${_name}") || true
-        [ -n "${_fb}" ] && _out="${_out}
-[hook] ${_fb}"
-      else
-        say "${C_TOOL}⛔ ${_name} blocked by hook:${C_RST} ${_reason}"
-        _out="Tool call blocked by hook: ${_reason}"; _err=true
-      fi
-      _block=$(jq -nc --arg id "${_id}" --arg out "${_out}" --argjson e "${_err}" \
-        '{type:"tool_result", tool_use_id:$id, content:$out, is_error:$e}')
-      # Capture the seq before the write — it's the #handle for `verbose`.
-      _rseq=$(next_seq "${_dir}")
-      add_entry "${_dir}" user tool_result "${_name}" "${_block}"
-      [ -n "${HARSH_QUIET:-}" ] || render_tool_result "${_rseq}" "${_name}" "${_input}" "${_out}" "${_err}"
-      # Show the tool's display side-channel (fd 3) to the user only — it's
-      # never part of the model's context. Indented to sit under the result.
-      if [ -n "${HARSH_QUIET:-}" ]; then
-        :
-      elif [ -n "${_disp:-}" ] && [ -s "${_disp}" ]; then
-        sed 's/^/  /' "${_disp}"
-      fi
-      [ -n "${_disp:-}" ] && rm -f "${_disp}"
+  if [ "$(jqv "${_resp}" -r '.stop_reason // ""')" = tool_use ]; then
+    jqv "${_resp}" -c '.content[] | select(.type=="tool_use")' | while IFS= read -r _tu; do
+      do_tool_call "${_dir}" "${_tu}"
     done
     return 2
   fi
