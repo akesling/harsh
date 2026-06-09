@@ -849,7 +849,7 @@ With no command, harsh.sh starts an interactive REPL.
 
 Interactive:
   repl [SESSION]         Line-based REPL (default when no command is given).
-  tui [SESSION]          Launch the fzf chat TUI (harsh_tui.sh).
+  (tui [SESSION] — the fzf chat TUI — is a command; see the Commands list below.)
 
 Engine primitives (built in):
   init|new [NAME]        Create a session; prints its directory.
@@ -896,7 +896,6 @@ _cmd=${1:-repl}; [ $# -gt 0 ] && shift
 case "${_cmd}" in
   # --- engine primitives (in-process; reserved, never shadowed) -------------
   repl)     cmd_repl "$@" ;;
-  tui)      exec sh "${SELF_DIR}/harsh_tui.sh" "$@" ;;
   init|new) cmd_init "$@" ;;
   send)     cmd_send "$@" ;;
   step)     cmd_step "$@" ;;

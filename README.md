@@ -123,11 +123,13 @@ along in the environment so sub-agents can't recurse forever.
 CLI verbs are a directory too. `harsh.sh` keeps a small set of **engine
 primitives** in-process — they mutate state or drive the loop and can't be
 externalized: `init`/`new`, `send`, `step`, `run`, `ask`, `skill`, `assemble`,
-`path` (plus `repl`/`tui`). Everything else is a drop-in `commands/NAME.sh`
-resolved from `HARSH_COMMANDS_DIR` — including the shipped derived commands
-(`show`, `final`, `outline`, `verbose`, `manifest`, `sessions`, `session`,
-`resume`, `request`, `tools`, `schemas`, `tool`, `skills`, `hooks`, `config`,
-`version`), which are just instances of the mechanism.
+`path`, and `repl` (the line-REPL loop). Everything else is a drop-in
+`commands/NAME.sh` resolved from `HARSH_COMMANDS_DIR` — including the shipped
+derived commands (`show`, `final`, `outline`, `verbose`, `manifest`, `sessions`,
+`session`, `resume`, `request`, `tools`, `schemas`, `tool`, `tui`, `skills`,
+`hooks`, `config`, `version`), which are just instances of the mechanism. Even
+`tui` is one: unlike `repl` (an in-process loop), it merely `exec`s
+`harsh_tui.sh`, so it's a CLI-only launcher command, not a primitive.
 
 Even **session management is ordinary commands**: `sessions` lists, `session`
 prints the current directory, and `resume` switches the interactive session. The
