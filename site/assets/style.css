@@ -78,7 +78,10 @@ a:hover { text-decoration: underline; }
 .btn {
   font: inherit; font-size: 13px; color: var(--fg-dim);
   background: var(--bg-soft); border: 1px solid var(--border-2);
-  border-radius: 7px; padding: 6px 10px; cursor: pointer; display: inline-flex; gap: 7px; align-items: center;
+  border-radius: 7px; padding: 0 10px; cursor: pointer; display: inline-flex; gap: 7px; align-items: center;
+  /* Fixed height + border-box so every top-bar control lines up the same
+     regardless of font size or whether it carries a kbd chip / icon. */
+  height: 32px; box-sizing: border-box; flex: none;
 }
 .btn:hover { color: var(--fg); border-color: var(--accent); }
 .btn kbd {
@@ -94,7 +97,8 @@ a:hover { text-decoration: underline; }
 .mode-badge:hover { color: var(--fg); border-color: var(--accent); }
 .iconlink {
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--fg-dim); padding: 4px; border-radius: 7px;
+  color: var(--fg-dim); border-radius: 7px;
+  height: 32px; box-sizing: border-box; padding: 0 7px; flex: none;
 }
 .iconlink:hover { color: var(--fg); background: var(--bg-soft); text-decoration: none; }
 
@@ -257,6 +261,11 @@ a.path:hover { text-decoration: none; }
 @media (max-width: 760px) {
   .crumbs { display: none; }
   .con-out .e { grid-template-columns: 1fr; gap: 0; }
+  /* Keyboard-shortcut chips are meaningless on touch — drop them so the buttons
+     are compact and uniform, and tighten the bar's gap to fit a small screen. */
+  .topbar { gap: 10px; }
+  .btn kbd { display: none; }
+  .btn { gap: 0; }
 }
 
 /* scrollbars */
