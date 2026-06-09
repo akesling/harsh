@@ -265,8 +265,16 @@ EOF
       if [ -n "${_cline}" ]; then
         # A repl-surfaced commands/ verb; fill in the session when it takes one.
         case "${_cline}" in *SESSION*) _sset=${_sess} ;; *) _sset="" ;; esac
+        # Same two channels as the REPL: HARSH_CURRENT_SESSION names the active
+        # session; a command may request a switch by writing to HARSH_SESSION_OUT.
+        _sout=$(mktemp 2>/dev/null || echo "/tmp/harsh_tsout.$$"); : > "${_sout}"
         # shellcheck disable=SC2086  # sset/rest are intentionally split into args
-        ${_harsh} "${_name}" ${_sset} ${_rest}
+        HARSH_CURRENT_SESSION="${_sess}" HARSH_SESSION_OUT="${_sout}" ${_harsh} "${_name}" ${_sset} ${_rest}
+        if [ -s "${_sout}" ]; then
+          _tgt=$(cat "${_sout}"); _ndir=$(${_harsh} path "${_tgt}")
+          { [ -d "${_ndir}" ] && [ -f "${_ndir}/manifest.csv" ]; } && { _sess=${_tgt}; _dir=${_ndir}; }
+        fi
+        rm -f "${_sout}"
         printf '\n%s[ press Enter to continue ]%s' "${C_DIM}" "${C_RST}"; read -r _ || true
       elif ${_harsh} commands | grep -qE "^${_name}([[:space:]]|$)"; then
         # Exists, but it's CLI-only (e.g. reads stdin) — not meaningful here.

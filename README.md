@@ -125,9 +125,18 @@ primitives** in-process — they mutate state or drive the loop and can't be
 externalized: `init`/`new`, `send`, `step`, `run`, `ask`, `skill`, `assemble`,
 `path` (plus `repl`/`tui`). Everything else is a drop-in `commands/NAME.sh`
 resolved from `HARSH_COMMANDS_DIR` — including the shipped derived commands
-(`show`, `final`, `outline`, `verbose`, `manifest`, `sessions`, `request`,
-`tools`, `schemas`, `tool`, `skills`, `hooks`, `config`, `version`), which are
-just instances of the mechanism.
+(`show`, `final`, `outline`, `verbose`, `manifest`, `sessions`, `session`,
+`resume`, `request`, `tools`, `schemas`, `tool`, `skills`, `hooks`, `config`,
+`version`), which are just instances of the mechanism.
+
+Even **session management is ordinary commands**: `sessions` lists, `session`
+prints the current directory, and `resume` switches the interactive session. The
+last one needs to change the REPL/TUI's *current session* — which a subprocess
+can't do directly — so the loop hands every `/NAME` command two channels:
+`HARSH_CURRENT_SESSION` (read: which session is active) and `HARSH_SESSION_OUT`
+(write: a file a command drops a target name into to request a switch). `resume`
+just validates a target and writes it there; the loop reads it back and switches.
+That's the `cd`-as-an-external-command pattern, and any command can use it.
 
 A command prints its one-line help with `--describe` (powering `harsh.sh
 commands` and `help`), and composes the primitives by calling back through

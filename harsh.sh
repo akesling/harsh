@@ -617,9 +617,7 @@ REPL:
   <text>           send a message to the agent and run
   /SKILL [args]    invoke a skill (e.g. /commit, /review)
   /verbose         toggle full tool output;  /verbose #SEQ  expand one entry
-  /session         print this session's directory
-  /sessions        list past sessions;  /resume <ID>  switch
-  /new             start a fresh session
+  /new             start a fresh session  (/sessions to list, /resume <ID> to switch)
   /help            this help;  /quit  exit (or Ctrl-D)
 
   Ctrl-C           cancel the current line (Ctrl-D or /quit to exit)
@@ -629,26 +627,6 @@ REPL:
 Commands (type as /NAME — SESSION is filled in automatically):
 EOF
   list_commands repl | sort | sed 's/^/  \//'
-}
-
-# repl_sessions CURRENT — show `sessions` (NAME<TAB>LABEL) in the REPL. The LABEL
-# is already formatted by commands/sessions.sh; here we only add a left margin,
-# mark the current session with a caret, and trail the resume ID dimmed.
-repl_sessions() {
-  _cur=$(basename "${1:-}")
-  _rows=$(run_command sessions)
-  if [ -z "${_rows}" ]; then
-    printf '%s  (no sessions yet)%s\n' "${C_DIM}" "${C_RST}" >&2
-    return 0
-  fi
-  # Column header, aligned to the label fields built by commands/sessions.sh:
-  # "<mark> <MM-DD HH:MM(11)> <TURNS(4)>  <TOPIC>  <SESSION ID>".
-  printf '%s  %-11s %4s  %-56s%s%s\n' \
-    "${C_BOLD}" 'STARTED' 'TRNS' 'TOPIC' 'SESSION' "${C_RST}" >&2
-  printf '%s\n' "${_rows}" | while IFS='	' read -r _n _label; do
-    if [ "${_n}" = "${_cur}" ]; then _mark="${C_USER}▸${C_RST}"; else _mark=' '; fi
-    printf '%s %s  %s%s%s\n' "${_mark}" "${_label}" "${C_DIM}" "${_n}" "${C_RST}" >&2
-  done
 }
 
 # Bracketed-paste markers. Terminals in bracketed-paste mode wrap a paste in
@@ -802,22 +780,10 @@ cmd_repl() {
       '/verbose '*|'/v '*)
         # With a #SEQ arg: expand that one entry without changing the mode.
         run_command verbose "${_sess}" "${_line#* }" ;;
-      /session) printf '%s\n' "${_dir}" ;;
-      /sessions|/ls)
-        repl_sessions "${_dir}"
-        [ "${_tty}" = 1 ] && printf '%sUse /resume <ID> to switch.%s\n' "${C_DIM}" "${C_RST}" >&2 ;;
-      '/resume '*|'/switch '*)
-        _target=${_line#* }
-        _tdir=$(session_dir "${_target}")
-        if [ -d "${_tdir}" ] && [ -f "${_tdir}/manifest.csv" ]; then
-          _dir=${_tdir}; _sess=${_dir}
-          [ "${_tty}" = 1 ] && printf '%s[resumed: %s]%s\n' "${C_DIM}" "${_sess}" "${C_RST}" >&2
-          run_command show "${_sess}"
-        else
-          printf 'no such session: %s\n' "${_target}" >&2
-        fi ;;
-      /resume|/switch)
-        printf 'usage: /resume <session ID>  (see /sessions)\n' >&2 ;;
+      # /session, /sessions, and /resume are ordinary commands now (see
+      # commands/session.sh, commands/sessions.sh, commands/repl/resume.sh) —
+      # they resolve through the /NAME path below. /resume requests a switch by
+      # writing the target to $HARSH_SESSION_OUT, which the loop honors there.
       /new)
         _dir=$(cmd_init); _sess=${_dir}
         [ "${_tty}" = 1 ] && printf '[new session: %s]\n' "${_sess}" >&2 ;;
@@ -827,13 +793,22 @@ cmd_repl() {
         _name=${_line#/}; _rest=""
         case "${_name}" in *' '*) _rest=${_name#* }; _name=${_name%% *} ;; esac
         if _p=$(resolve_command repl "${_name}"); then
+          # Two channels let a command interact with the loop's current session:
+          # HARSH_CURRENT_SESSION (read) names it; a command that writes a target
+          # to the HARSH_SESSION_OUT file requests a switch (see resume).
+          _sout=$(mktemp 2>/dev/null || echo "/tmp/harsh_sout.$$"); : > "${_sout}"
           if command_wants_session "${_p}"; then
             # shellcheck disable=SC2086  # split rest into positional args
-            sh "${_p}" "${_sess}" ${_rest}
+            HARSH_CURRENT_SESSION="${_sess}" HARSH_SESSION_OUT="${_sout}" sh "${_p}" "${_sess}" ${_rest}
           else
             # shellcheck disable=SC2086
-            sh "${_p}" ${_rest}
+            HARSH_CURRENT_SESSION="${_sess}" HARSH_SESSION_OUT="${_sout}" sh "${_p}" ${_rest}
           fi
+          if [ -s "${_sout}" ]; then
+            _ndir=$(session_dir "$(cat "${_sout}")")
+            { [ -d "${_ndir}" ] && [ -f "${_ndir}/manifest.csv" ]; } && { _dir=${_ndir}; _sess=${_dir}; }
+          fi
+          rm -f "${_sout}"
         elif resolve_command cli "${_name}" >/dev/null 2>&1; then
           printf '%s/%s is a CLI-only command — run: harsh.sh %s …%s\n' \
             "${C_DIM}" "${_name}" "${_name}" "${C_RST}" >&2

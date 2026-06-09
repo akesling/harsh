@@ -1,6 +1,20 @@
 #!/usr/bin/env sh
 # The dependency-free REPL, driven non-interactively (piped stdin).
 
+# session management is factored into ordinary commands: /sessions and /session
+# resolve through commands/, and /resume is a commands/repl/ verb that switches
+# the loop's current session via the HARSH_SESSION_OUT channel.
+test_resume_is_repl_only_not_a_cli_verb() {
+  hsh resume whatever >/dev/null 2>&1; _rc=$?
+  assert_ne "${_rc}" 0 'resume must not run as a CLI command (it lives in commands/repl/)'
+}
+
+test_session_command_prints_current_dir() {
+  _s=$(hnew sesscmd)
+  _out=$(printf '%s\n' '/session' '/quit' | hsh repl "${_s}" 2>&1)
+  assert_contains "${_out}" 'sesscmd' '/session resolves to the command with the current session filled in'
+}
+
 test_repl_quit_exits_clean() {
   printf '/quit\n' | hsh repl rt >/dev/null 2>&1; _rc=$?
   assert_eq "${_rc}" 0 'exit code'
