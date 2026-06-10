@@ -11,6 +11,7 @@ hooks/
 ├── PreToolUse/          before a tool call runs
 │   └── <tool>/          ... only before that specific tool (e.g. bash/)
 ├── PostToolUse/         after a tool call runs
+├── PreCompact/          before a session is compacted (summarize + archive)
 └── Stop/                when the agent finishes a turn (end of run)
 ```
 
@@ -34,6 +35,8 @@ What blocking does per event:
   the model as an error tool result.
 - **Stop** `exit 2` → the agent does **not** stop; the reason is injected as a
   new user message and it takes another turn (capped to avoid loops).
+- **PreCompact** `exit 2` → the compaction is skipped. On allow, stdout is
+  appended to the summarizer instruction (e.g. "keep the build commands").
 - **SessionStart / PostToolUse** are context-only; their stdout is injected
   (opening context / appended to the tool result) and exit 2 isn't special.
 
@@ -46,11 +49,13 @@ What blocking does per event:
 // PostToolUse additionally has: "tool_output": "...", "is_error": false
 // UserPromptSubmit
 { "event": "UserPromptSubmit", "session_dir": "...", "prompt": "..." }
-// SessionStart / Stop
+// SessionStart / Stop / PreCompact
 { "event": "SessionStart", "session_dir": "..." }
 ```
 
 Parse it with jq, e.g. `cmd=$(jq -r '.tool_input.command // ""')`.
 
 See `PreToolUse/bash/10-guard.sh` and `SessionStart/10-context.sh` for working
-examples. List what's installed with `harsh.sh hooks`.
+examples — note the bash guard is a **demonstration**, not a security boundary
+(substring matches are trivially bypassed; the bash tool is an unsandboxed
+shell). List what's installed with `harsh.sh hooks`.

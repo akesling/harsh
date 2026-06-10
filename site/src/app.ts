@@ -207,11 +207,11 @@ function buildTopbar() {
     `<div class="brand"><span class="glyph">&#10095;</span><a href="${ROOT}index.html">harsh</a></div>` +
     `<div class="crumbs">${crumbHtml}</div>` +
     `<div class="spacer"></div>` +
-    `<button class="btn mode-badge" id="input-mode" title="Input keymap — click to toggle vi / emacs"></button>` +
-    `<button class="btn" id="toggle-console" title="Toggle terminal (\`)">&#10095;_ <kbd>&#96;</kbd></button>` +
+    `<button class="btn mode-badge" id="input-mode" title="Input keymap — click to toggle vi / emacs" aria-label="Toggle input keymap (vi / emacs)"></button>` +
+    `<button class="btn" id="toggle-console" title="Toggle terminal (\`)" aria-label="Toggle terminal">&#10095;_ <kbd>&#96;</kbd></button>` +
     `<button class="btn" id="open-palette">Jump to&hellip; <kbd>${PALETTE_KEY}</kbd></button>` +
-    `<button class="btn" id="toggle-theme" title="Toggle theme">&#9681;</button>` +
-    `<a class="iconlink" id="repo-link" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="View on GitHub">${octocat}</a>`;
+    `<button class="btn" id="toggle-theme" title="Toggle theme" aria-label="Toggle light/dark theme">&#9681;</button>` +
+    `<a class="iconlink" id="repo-link" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="View on GitHub" aria-label="View on GitHub">${octocat}</a>`;
   body.prepend(bar);
   modeBadge = document.getElementById("input-mode")!;
   modeBadge.addEventListener("click", toggleInputMode);
@@ -457,7 +457,7 @@ function buildConsole(idx: { files: any[] }) {
         `autocapitalize="off" autocorrect="off" placeholder="ls · cd tools · open harsh.sh · grep hook · help">` +
       `<button class="con-toggle" id="con-toggle" title="Close terminal (^d on empty prompt, or \`)">&#9662;</button>` +
     `</div>` +
-    `<div class="con-status" id="con-status"></div>`;
+    `<div class="con-status" id="con-status" role="status" aria-live="polite"></div>`;
   document.querySelector(".topbar")!.insertAdjacentElement("afterend", conEl);
   conScroll = conEl.querySelector("#con-scroll")!;
   conInput = conEl.querySelector("#con-input")!;
@@ -747,13 +747,24 @@ function renderMarkdown(_rec: any) {
   document.querySelector(".doc")!.appendChild(div);
 }
 
+// Reverse esc/escAttr for text that is about to be re-escaped (link hrefs are
+// extracted from already-escaped HTML; double-escaping turns &amp; into
+// &amp;amp; and breaks query strings).
+const unescHtml = (s: string) =>
+  s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+
 function mdInline(text: string) {
   const codes: string[] = [];
   const S0 = String.fromCharCode(0xe000), S1 = String.fromCharCode(0xe001);
   text = text.replace(/`([^`]+)`/g, (_m, c) => { codes.push(c); return S0 + (codes.length - 1) + S1; });
   let html = linkifyPaths(text);
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, t, u) => `<a href="${escAttr(u)}">${t}</a>`);
-  html = html.replace(/(^|[^a-zA-Z0-9])(https?:\/\/[^\s<)]+)(?=$|[\s<).,])/g, (_m, p, u) => `${p}<a href="${escAttr(u)}">${esc(u)}</a>`);
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, u) => {
+    const url = unescHtml(u);
+    // only link schemes/paths we expect — a javascript: href is markdown we'd
+    // rather render inert than execute
+    return /^(?:https?:|mailto:|\.|\/|#)/i.test(url) ? `<a href="${escAttr(url)}">${t}</a>` : m;
+  });
+  html = html.replace(/(^|[^a-zA-Z0-9])(https?:\/\/[^\s<)]+)(?=$|[\s<).,])/g, (_m, p, u) => `${p}<a href="${escAttr(unescHtml(u))}">${u}</a>`);
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
   html = html.replace(new RegExp(S0 + "(\\d+)" + S1, "g"), (_m, k) => `<code>${esc(codes[+k])}</code>`);
@@ -820,7 +831,7 @@ function buildPalette(idx: { files: any[]; funcs: any[] }) {
 
   const bg = document.createElement("div");
   bg.className = "palette-bg";
-  bg.innerHTML = `<div class="palette"><input type="text" placeholder="Jump to a file or function&hellip;" spellcheck="false"><div class="results"></div></div>`;
+  bg.innerHTML = `<div class="palette" role="dialog" aria-label="Jump to a file or function"><input type="text" placeholder="Jump to a file or function&hellip;" spellcheck="false" aria-label="Jump to a file or function"><div class="results" role="listbox"></div></div>`;
   document.body.appendChild(bg);
   palette = bg;
   paletteInput = bg.querySelector("input")!;

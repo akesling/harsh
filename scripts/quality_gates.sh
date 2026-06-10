@@ -22,7 +22,7 @@ section() { printf '\n== %s ==\n' "$1"; }
 
 # Collect every shell script we ship into the positional params ($@), so later
 # loops can use "$@" without word-splitting pitfalls (no arrays in POSIX sh).
-set -- harsh.sh harsh_tui.sh install.sh
+set -- harsh.sh install.sh
 for _f in tools/*.sh commands/*.sh commands/*/*.sh lib/*.sh scripts/*.sh tests/*.sh hooks/*/*.sh hooks/*/*/*.sh; do
   [ -f "${_f}" ] && set -- "$@" "${_f}"
 done
@@ -59,6 +59,20 @@ for _shb in sh bash zsh dash ash busybox; do
   fi
 done
 [ "${_any_shell}" = 1 ] || bad "no POSIX shell found to parse with"
+
+# ---------------------------------------------------------------------------
+# STYLE.md: shipped harness/tool/command code is jq + curl + POSIX sh only — no
+# awk. Tests and dev scripts are exempt. Comments are stripped first so prose
+# that merely *mentions* awk doesn't trip the gate.
+section "no awk in shipped code"
+_aok=1
+for _f in harsh.sh install.sh tools/*.sh commands/*.sh commands/*/*.sh lib/*.sh hooks/*/*.sh hooks/*/*/*.sh; do
+  [ -f "${_f}" ] || continue
+  if sed 's/#.*//' "${_f}" | grep -E '(^|[[:space:];|&(])awk([[:space:]]|$)' >/dev/null 2>&1; then
+    bad "awk invoked in shipped file: ${_f}"; _aok=0
+  fi
+done
+[ "${_aok}" = 1 ] && pass "shipped code is awk-free"
 
 # ---------------------------------------------------------------------------
 section "tool schemas"

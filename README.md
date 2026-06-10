@@ -5,14 +5,13 @@ An agent harness like no other. **Pure portable shell.**
 The core is a single script (`harsh.sh`) that drives an LLM agent loop over a
 session directory: one file per turn / tool call, plus a `manifest.csv` of
 lightweight metadata. Maximum dependencies are **jq**, **curl**, and a
-bash-like shell — `bash`, `zsh`, and `ash` are all supported. A chat-style TUI
-(`harsh_tui.sh`) turns it into a usable chat/coding interface, with fzf used
-only as an optional turn-browser.
+bash-like shell — the test suite runs under `dash`, `bash`, `zsh`, and
+`busybox sh` in CI. The built-in line REPL is the interactive mode: paste-safe,
+streaming-capable, and dependency-free.
 
 ```
 harsh/
 ├── harsh.sh          # the core — fully functional on its own
-├── harsh_tui.sh      # chat-style TUI (fzf optional, only for /browse)
 ├── harsh.conf        # configuration (sourced by harsh.sh)
 ├── tools/            # one file per tool, + tool.sh dispatcher
 │   ├── tool.sh       # every tool call runs through this
@@ -28,7 +27,8 @@ harsh/
 ├── sessions/         # one directory per conversation
 │   └── <session>/
 │       ├── manifest.csv          # one line per entry (metadata)
-│       └── NNNN-role-type[-name].json   # one file per entry
+│       ├── NNNN-role-type[-name].json   # one file per entry
+│       └── archive/<ts>/         # full pre-compaction history (see below)
 └── logs/             # request/response logs
 ```
 
@@ -126,14 +126,12 @@ externalized: `init`/`new`, `send`, `step`, `run`, `ask`, `skill`, `assemble`,
 `path`, and `repl` (the line-REPL loop). Everything else is a drop-in
 `commands/NAME.sh` resolved from `HARSH_COMMANDS_DIR` — including the shipped
 derived commands (`show`, `final`, `outline`, `verbose`, `manifest`, `sessions`,
-`session`, `resume`, `request`, `tools`, `schemas`, `tool`, `tui`, `skills`,
-`hooks`, `config`, `version`), which are just instances of the mechanism. Even
-`tui` is one: unlike `repl` (an in-process loop), it merely `exec`s
-`harsh_tui.sh`, so it's a CLI-only launcher command, not a primitive.
+`session`, `resume`, `request`, `tools`, `schemas`, `tool`, `skills`,
+`hooks`, `config`, `version`), which are just instances of the mechanism.
 
 Even **session management is ordinary commands**: `sessions` lists, `session`
 prints the current directory, and `resume` switches the interactive session. The
-last one needs to change the REPL/TUI's *current session* — which a subprocess
+last one needs to change the REPL's *current session* — which a subprocess
 can't do directly — so the loop hands every `/NAME` command two channels:
 `HARSH_CURRENT_SESSION` (read: which session is active) and `HARSH_SESSION_OUT`
 (write: a file a command drops a target name into to request a switch). `resume`
@@ -153,7 +151,7 @@ printf 'bytes: %s\n' "$(cat "$dir"/[0-9]*.json | wc -c | tr -d ' ')"
 ```
 
 Now `harsh.sh cost SESSION` works and appears in `help`. Commands are also
-reachable in the REPL and TUI as `/NAME` (the current session is filled in
+reachable in the REPL as `/NAME` (the current session is filled in
 automatically for session-scoped ones, detected from the `--describe` usage),
 and `/help` lists them dynamically — so a new command shows up everywhere with
 no edits. A command restricts its surfaces by *where it lives*: top-level `commands/` is
@@ -166,7 +164,7 @@ to interpret, just like hooks narrow scope with a subdirectory. `tool` lives in
 
 A skill is `skills/NAME/SKILL.md` with YAML front-matter (`name`,
 `description`) and instructions. The **skills** tool loads a skill on demand;
-in the TUI a skill is also reachable as a `/NAME` slash command, à la Claude
+in the REPL a skill is also reachable as a `/NAME` slash command, à la Claude
 Code.
 
 ### Hooks
@@ -183,6 +181,7 @@ hooks/
 ├── PreToolUse/          before any tool call
 │   └── bash/            ... only before the `bash` tool (per-tool scoping)
 ├── PostToolUse/         after a tool call (append feedback)
+├── PreCompact/          before a compaction (block it / steer the summary)
 └── Stop/                when a turn ends (force another turn)
 ```
 
@@ -190,10 +189,11 @@ A hook's **exit code** is its decision: `2` blocks (its stdout is the reason),
 `0` allows (stdout is collected as context), anything else is a logged,
 non-blocking error. Blocking means: reject the prompt (`UserPromptSubmit`), skip
 the tool and feed the reason back to the model (`PreToolUse`), or keep going
-(`Stop`). A hook in `PreToolUse/` runs before every tool; one in
-`PreToolUse/<tool>/` runs only before that tool. List installed hooks with
-`harsh.sh hooks`. Full contract and payload shapes: `hooks/README.md`. Ships
-with `PreToolUse/bash/10-guard.sh` (blocks destructive commands) and
+(`Stop`), or skip the compaction (`PreCompact`). A hook in `PreToolUse/` runs
+before every tool; one in `PreToolUse/<tool>/` runs only before that tool. List
+installed hooks with `harsh.sh hooks`. Full contract and payload shapes:
+`hooks/README.md`. Ships with `PreToolUse/bash/10-guard.sh` (an *example* guard
+— substring matching is not a security boundary, and the docs say so) and
 `SessionStart/10-context.sh` (injects cwd/git context).
 
 ## Install
@@ -203,23 +203,23 @@ git clone <repo> harsh && cd harsh
 ./install.sh                 # writes a config + an `ha` launcher on your PATH
 export ANTHROPIC_API_KEY=sk-ant-...
 ha                           # REPL   (HARSH_MOCK=1 ha  to try it offline)
-ha tui                       # fzf chat TUI
 ```
 
-`install.sh` copies the runtime (`harsh.sh`, `harsh_tui.sh`, `tools/`,
-`skills/`, `hooks/`) into `~/.local/share/harsh/`, writes
+`install.sh` copies the runtime (`harsh.sh`, `tools/`, `skills/`, `hooks/`,
+`commands/`, `lib/`) into `~/.local/share/harsh/`, writes
 `~/.config/harsh/harsh.conf` naming every directory by absolute path, and drops
 an `ha` launcher in `~/.local/bin/`. The launcher just exports `HARSH_CONFIG`
 and execs the installed `harsh.sh` — so harsh finds its directories purely from
 the config, independent of where or how `ha` is invoked (no `$PATH`/symlink
 magic). **After installing, the checkout is disposable.** Sessions and logs
 default under the install root; reinstalling refreshes program files but never
-touches your sessions.
+touches your sessions (and keeps an existing config, warning if it no longer
+matches where you installed).
 
 Layout:
 
 ```
-~/.local/share/harsh/   harsh.sh, harsh_tui.sh, tools/, skills/, hooks/, sessions/, logs/
+~/.local/share/harsh/   harsh.sh, tools/, skills/, hooks/, commands/, lib/, sessions/, logs/
 ~/.config/harsh/harsh.conf
 ~/.local/bin/ha
 ```
@@ -238,7 +238,7 @@ Or skip the installer entirely and run `./harsh.sh` straight from the checkout
 # Configure (or just use env vars)
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# Interactive REPL — this is the default mode (no fzf needed)
+# Interactive REPL — this is the default mode
 ./harsh.sh
 
 # Or one-shot: create a session, ask, run the loop
@@ -253,8 +253,8 @@ sess=$(./harsh.sh new)
 ### REPL
 
 Running `./harsh.sh` with no command drops into a dependency-free, line-based
-REPL — the core's own interactive mode (`harsh_tui.sh` is the richer fzf
-front-end). Type a message and press Enter; the agent runs and prints as it
+REPL — the core's own interactive mode. Type a message and press Enter; the
+agent runs and prints as it
 goes. Slash commands: `/tools`, `/skills`, `/SKILL [args]`, `/show`,
 `/session`, `/sessions`, `/resume <ID>`, `/new`, `/help`, `/quit` (or
 Ctrl-D). `/sessions` lists past conversations and `/resume <ID>` switches to
@@ -280,18 +280,39 @@ non-interactively:
 printf '%s\n' 'list the files' '/quit' | ./harsh.sh repl
 ```
 
-### TUI
+### Streaming
 
-```sh
-./harsh_tui.sh            # new session
-./harsh_tui.sh <session>  # resume
-```
+Set `HARSH_STREAM=1` to print the reply token-by-token as it arrives
+(Anthropic only — OpenAI's delta format isn't wired up). The session record is
+identical either way: harsh folds the SSE event stream back into the canonical
+response shape (`harsh.sh stream-assemble` exposes that transform, and the
+test suite covers it), so tools, hooks, usage accounting, and `show` don't
+know or care that the turn streamed.
 
-A calm chat interface: a scrolling transcript on top, a real input line at the
-bottom. Typing never disturbs the history — the transcript only redraws when a
-turn completes. `/help`, `/tools`, `/skills`, and `/SKILL [args]` (e.g.
-`/commit`, `/review`) work as slash commands. `/browse` opens an optional fzf
-turn-browser if fzf is installed; `/show` redraws; `/quit` or Ctrl-D quits.
+## Long sessions & reliability
+
+Three things keep a long agentic session alive:
+
+- **Auto-compaction.** A conversation grows until the provider rejects it —
+  unless something gives. When the previous turn's context passes
+  `HARSH_COMPACT_AT` tokens (default 150 000, measured from the API's own
+  usage numbers, not an estimate), the loop asks the model for a comprehensive
+  summary, moves the *entire* history into `archive/<timestamp>/` inside the
+  session directory, and restarts the session from that one summary entry. A
+  just-typed, not-yet-answered prompt survives. Nothing is deleted — the
+  archive holds every original entry plus the manifest. Run it by hand with
+  `harsh.sh compact SESSION`; a `PreCompact` hook can block it (exit 2) or
+  append guidance to the summarizer instruction. Set `HARSH_COMPACT_AT=0` to
+  disable.
+- **Retry with backoff.** Transient API failures — network errors, timeouts,
+  408/429/5xx (including Anthropic's 529 overloaded) — retry up to
+  `HARSH_RETRIES` times (default 3), waiting `HARSH_RETRY_DELAY` seconds
+  (default 2) and doubling each attempt. Non-transient errors surface
+  immediately with the provider's message.
+- **Truncation handling.** A reply cut off at `HARSH_MAX_TOKENS` is not a
+  clean finish: the loop warns and re-steps so the conversation ends on the
+  partial assistant message and the model continues where it was cut off
+  (bounded — after a few extensions it tells you to raise the cap).
 
 ## Offline smoke test (no API key)
 
@@ -317,6 +338,7 @@ Run `./harsh.sh help` for the full list. Highlights:
 | `run SESSION` | Run the loop to completion |
 | `ask SESSION TEXT` | `send` + `run` |
 | `skill SESSION NAME [ARGS]` | Load and run a skill |
+| `compact SESSION` | Summarize + archive the conversation; restart from the summary |
 | `final SESSION` | Print the last assistant message (sub-agent result) |
 | `assemble` / `request` / `manifest` / `show` | Inspect state |
 | `usage SESSION` | Token usage + cache hit rate + approx cost |
@@ -335,11 +357,14 @@ run `harsh.sh usage SESSION` to see the hit rate and what it saved.
 
 ```sh
 tests/run.sh                 # hermetic test suite (jq only; HARSH_MOCK, offline)
-scripts/quality_gates.sh     # shellcheck + cross-shell parse + schemas + tests + site
+HARSH_TEST_SH=zsh tests/run.sh   # same suite, harness running under zsh
+scripts/quality_gates.sh     # shellcheck + cross-shell parse + no-awk + schemas + tests + site
 ```
 
 Every test runs in its own tempdir with a sandbox config, so a run never
-touches the real `sessions/`, `logs/`, or `hooks/`. See `tests/README.md`.
+touches the real `sessions/`, `logs/`, or `hooks/`. `HARSH_TEST_SH` picks the
+shell the harness-under-test runs with — CI runs the whole suite under dash,
+bash, zsh, and `busybox sh`, plus macOS. See `tests/README.md`.
 
 `quality_gates.sh` also runs the source-tour site's Bun unit tests when `bun`
 is installed — installing `site/`'s deps automatically (`bun install
@@ -357,7 +382,7 @@ the interactive source tour (`site/`) to **Cloudflare Pages** via Wrangler:
 
 | Workflow | Trigger | Does |
 | --- | --- | --- |
-| `ci` | push to main, every PR | `scripts/quality_gates.sh` + `bun test` + site build |
+| `ci` | push to main, every PR | `scripts/quality_gates.sh`, the test suite under dash/bash/zsh/busybox + macOS, `bun test` + site build |
 | `deploy` | push to main | build site → `wrangler pages deploy --branch=main` (production) |
 | `preview-build` → `preview-deploy` | every PR | build (untrusted), then `wrangler pages deploy --branch=pr-<N>` and comment the URL |
 
@@ -366,7 +391,10 @@ Cloudflare Pages handles the production/preview split natively by branch name:
 preview at a stable `https://pr-<N>.<project>.pages.dev` alias, so no cleanup
 job is needed. The build/deploy split (a no-secrets `pull_request` build that
 hands a trusted `workflow_run` deploy an artifact) keeps the Cloudflare token
-out of untrusted fork PRs while still giving them a preview.
+out of untrusted fork PRs while still giving them a preview. The deploy never
+trusts artifact contents: it resolves the PR number server-side from the run's
+head SHA. All actions are pinned to commit SHAs, with Dependabot
+(`.github/dependabot.yml`) keeping the pins and the site's deps fresh.
 
 **One-time setup:**
 
@@ -381,4 +409,7 @@ out of untrusted fork PRs while still giving them a preview.
 
 Scripts target POSIX `sh` and avoid arrays, `[[ ]]`, and process substitution.
 zsh is normalized with `emulate sh`. Structured work is delegated to `jq` rather
-than fragile shell string munging.
+than fragile shell string munging (`awk` is banned in shipped code, and a
+quality gate enforces it). The claim is tested, not asserted: CI executes the
+full suite under dash, bash, zsh, and `busybox sh` on Linux, and under macOS's
+BSD userland.

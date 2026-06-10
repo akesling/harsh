@@ -5,11 +5,11 @@ When in doubt, run `scripts/quality_gates.sh` — it encodes most of this.
 
 ## Dependencies
 
-The runtime depends on **jq**, **curl**, and a **POSIX shell** — only, ever. The
-fzf TUI (`harsh_tui.sh`) may additionally use **fzf**, and nothing else. No
+The runtime depends on **jq**, **curl**, and a **POSIX shell** — only, ever. No
 `awk`, `python`, `perl`, or coreutils-beyond-POSIX in shipped harness/tool/command
 code. Push structured work into `jq` rather than awk/sed gymnastics. (A few
-*tests* use `awk`; that's tolerated as dev-only — don't add it to shipped code.)
+*tests* use `awk`; that's tolerated as dev-only — don't add it to shipped code.
+`scripts/quality_gates.sh` enforces the no-awk rule over shipped files.)
 
 ## Portability
 

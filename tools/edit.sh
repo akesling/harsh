@@ -80,18 +80,17 @@ if [ "${HARSH_EDIT_DIFF:-1}" != 0 ] && [ -n "${_diff:-}" ] && { : >&3; } 2>/dev/
     else
       # Built-in ANSI styling: green adds, red dels, cyan hunks, bold-dim file
       # headers, dim context. Markers are kept so it still reads as a diff if
-      # colors are stripped downstream.
-      printf '%s\n' "${_diff}" | awk '
-        BEGIN {
-          grn="\033[32m"; red="\033[31m"; cyn="\033[36m";
-          bld="\033[1m"; dim="\033[2m"; rst="\033[0m";
-        }
-        /^\+\+\+/ || /^---/ { print bld dim $0 rst; next }
-        /^@@/                { print cyn $0 rst; next }
-        /^\+/                { print grn $0 rst; next }
-        /^-/                 { print red $0 rst; next }
-                             { print dim $0 rst }
-      ' >&3
+      # colors are stripped downstream. Pure sed (no awk — see STYLE.md): each
+      # rule rewrites the line to start with ESC, so later ^-anchored rules
+      # can't double-color it; the last rule dims whatever is still uncolored.
+      _e=$(printf '\033')
+      printf '%s\n' "${_diff}" | sed \
+        -e "s/^+++.*/${_e}[1m${_e}[2m&${_e}[0m/" \
+        -e "s/^---.*/${_e}[1m${_e}[2m&${_e}[0m/" \
+        -e "s/^@@.*/${_e}[36m&${_e}[0m/" \
+        -e "s/^+.*/${_e}[32m&${_e}[0m/" \
+        -e "s/^-.*/${_e}[31m&${_e}[0m/" \
+        -e "s/^[^${_e}].*/${_e}[2m&${_e}[0m/" >&3
     fi
   else
     printf '%s\n' "${_diff}" >&3

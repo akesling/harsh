@@ -6,11 +6,18 @@
 # tempdir) plus HARSH_MOCK=1 and HARSH_HOOKS_DIR. ROOT is the project root,
 # published by the runner. Nothing here touches the real sessions/ or logs/.
 
+# Which shell runs the harness-under-test. CI sets this to dash/bash/zsh/
+# "busybox sh" so the portability claim is tested, not just parsed. Left
+# unquoted on purpose so a two-word value ("busybox sh") splits.
+: "${HARSH_TEST_SH:=sh}"
+
 # Run the harness with the sandbox config (taken from HARSH_CONFIG in the env).
-hsh() { sh "${ROOT}/harsh.sh" "$@"; }
+# shellcheck disable=SC2086
+hsh() { ${HARSH_TEST_SH} "${ROOT}/harsh.sh" "$@"; }
 
 # Run a tool by name with a JSON argument:  tool NAME '{"...":...}'
-tool() { printf '%s' "$2" | sh "${ROOT}/tools/tool.sh" call "$1"; }
+# shellcheck disable=SC2086
+tool() { printf '%s' "$2" | ${HARSH_TEST_SH} "${ROOT}/tools/tool.sh" call "$1"; }
 
 # Create a fresh session and print its directory.
 hnew() { hsh new "${1:-tc}"; }

@@ -11,7 +11,7 @@ instances of this mechanism.
 
 `harsh.sh` keeps a small set of **engine primitives** in-process — they mutate
 session state or drive the loop and can't be externalized: `init`/`new`,
-`send`, `step`, `run`, `ask`, `skill`, `assemble`, `path`, plus `repl`/`tui`.
+`send`, `step`, `run`, `ask`, `skill`, `assemble`, `compact`, `path`, plus `repl`.
 These are **reserved**: a command file can't shadow them. Everything else is a
 command in this directory, built *on* the primitives.
 
@@ -28,9 +28,9 @@ Placement decides where a command is available — no flags to interpret, the sa
 way hooks narrow scope with a subdirectory:
 
 ```
-commands/NAME.sh        available everywhere   (CLI + REPL/TUI /NAME)   ← default
+commands/NAME.sh        available everywhere   (CLI + REPL /NAME)       ← default
 commands/cli/NAME.sh    CLI only               (harsh.sh NAME)
-commands/repl/NAME.sh   REPL/TUI only          (/NAME)
+commands/repl/NAME.sh   REPL only              (/NAME)
 ```
 
 `commands/cli/tool.sh` is CLI-only because it reads JSON on stdin, so it's never

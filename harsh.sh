@@ -13,13 +13,13 @@ if [ -n "${ZSH_VERSION:-}" ]; then
   emulate sh 2>/dev/null || setopt sh_word_split 2>/dev/null || true
 fi
 
-HARSH_VERSION=0.1.0
+HARSH_VERSION=0.2.0
 # SELF_DIR locates the checkout (repo-local config, sibling scripts). Data
 # directories are NOT inferred from it — they come from the config.
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 _config_file=""
 
-# Presentation lives in lib/render.sh so the REPL and TUI share one look. It is
+# Presentation lives in lib/render.sh so the REPL and `show` share one look. It is
 # optional: when absent, these inert fallbacks keep harsh.sh fully usable on its
 # own — just without color or markdown. They cover only what harsh.sh calls
 # directly (the colors it prints, plus the two block renderers).
@@ -82,16 +82,25 @@ load_config() {
       ;;
     *) die "unknown HARSH_PROVIDER: ${HARSH_PROVIDER} (expected anthropic or openai)" ;;
   esac
-  : "${HARSH_MAX_TOKENS:=4096}"
+  : "${HARSH_MAX_TOKENS:=8192}"
   : "${HARSH_API_VERSION:=2023-06-01}"
   # Prompt caching (Anthropic only) on by default — see build_request. 0 disables.
   : "${HARSH_CACHE:=1}"
+  # Transient API failures (network, 408/429/5xx) are retried with exponential
+  # backoff: HARSH_RETRIES attempts, starting at HARSH_RETRY_DELAY seconds.
+  : "${HARSH_RETRIES:=3}"
+  : "${HARSH_RETRY_DELAY:=2}"
   # Data directories must be set explicitly (config or env) — never inferred.
   for _v in HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR; do
     eval "_val=\${${_v}:-}"
     [ -n "${_val}" ] || die "${_v} is not set; define it in ${_cfg} (see harsh.conf)"
   done
   : "${HARSH_MAX_TURNS:=127}"
+  # Auto-compaction: when the last turn's context exceeds this many tokens,
+  # cmd_run summarizes the conversation and restarts the session from the
+  # summary (full history is archived in the session dir). 0 disables.
+  : "${HARSH_COMPACT_AT:=150000}"
+  case "${HARSH_COMPACT_AT}" in *[!0-9]*) die "HARSH_COMPACT_AT must be a number (tokens), got: ${HARSH_COMPACT_AT}" ;; esac
   # Hooks/commands/lib are optional; defaults sit next to harsh.sh. A missing
   # hooks or commands dir simply means none are installed.
   : "${HARSH_HOOKS_DIR:=${SELF_DIR}/hooks}"
@@ -108,6 +117,7 @@ load_config() {
          HARSH_TOOLS_DIR HARSH_SKILLS_DIR HARSH_SESSIONS_DIR HARSH_LOG_DIR \
          HARSH_HOOKS_DIR HARSH_COMMANDS_DIR HARSH_LIB_DIR \
          HARSH_MAX_TURNS HARSH_SYSTEM_PROMPT HARSH_API_KEY \
+         HARSH_RETRIES HARSH_RETRY_DELAY HARSH_COMPACT_AT \
          HARSH_SELF HARSH_CONFIG HARSH_VERSION
   have jq || die "jq is required"
 }
@@ -210,7 +220,7 @@ run_command() {
 
 # Print "NAME<TAB>description" (via --describe) for the top level plus the SURFACE
 # subdir. Default cli — the CLI sees top-level + cli/ commands; pass repl for the
-# REPL/TUI set (top-level + repl/).
+# REPL set (top-level + repl/).
 list_commands() {
   _surface=${1:-cli}
   for _d in "${HARSH_COMMANDS_DIR}" "${HARSH_COMMANDS_DIR}/${_surface}"; do
@@ -282,6 +292,132 @@ cmd_assemble() {
       end)' "$@"
 }
 
+# Streaming is opt-in (HARSH_STREAM=1) and Anthropic-only: OpenAI's delta
+# format differs and is not wired up. The mock never streams.
+stream_on() {
+  [ "${HARSH_STREAM:-0}" = 1 ] && [ "${HARSH_PROVIDER}" = anthropic ] && [ -z "${HARSH_MOCK:-}" ]
+}
+
+# Fold a stream of Anthropic SSE event objects (JSON, one per line, on stdin)
+# back into the canonical non-streaming response shape: message_start carries
+# the skeleton, content_block_start/delta build the blocks (text appends;
+# tool_use input arrives as partial JSON), message_delta carries stop_reason
+# and the output-side usage. Exposed as `harsh.sh stream-assemble` (raw SSE on
+# stdin) so the transform is testable offline.
+stream_assemble() {
+  jq -s '
+    def finalize: if .type == "tool_use" and has("_pj")
+                  then (.input = ((._pj | fromjson?) // {})) | del(._pj)
+                  else . end;
+    reduce .[] as $e (
+      {base: {}, blocks: [], stop: null, dusage: {}};
+      if $e.type == "message_start" then .base = ($e.message // {})
+      elif $e.type == "content_block_start" then
+        .blocks[$e.index] = ($e.content_block // {})
+      elif $e.type == "content_block_delta" then
+        if $e.delta.type == "text_delta" then
+          .blocks[$e.index].text = ((.blocks[$e.index].text // "") + $e.delta.text)
+        elif $e.delta.type == "input_json_delta" then
+          .blocks[$e.index]._pj = ((.blocks[$e.index]._pj // "") + $e.delta.partial_json)
+        else . end
+      elif $e.type == "message_delta" then
+        (.stop = ($e.delta.stop_reason // .stop)) | (.dusage = ($e.usage // {}))
+      else . end)
+    | .base
+      + {content: (.blocks | map(select(. != null) | finalize)),
+         stop_reason: (.stop // .base.stop_reason),
+         usage: ((.base.usage // {}) + .dusage)}'
+}
+
+# Approximate size (tokens) of the conversation as the API last saw it: the
+# most recent turn's usage covers the whole request context, plus what the
+# model added on top. Prints 0 when no turn has usage yet (fresh session).
+last_context_tokens() {
+  _dir=$1
+  set -- "${_dir}"/[0-9]*.json
+  [ -e "$1" ] || { printf '0'; return 0; }
+  jq -s '
+    [.[] | .meta.usage // empty] | last // {}
+    | (.input_tokens // 0) + (.cache_read_input_tokens // 0)
+      + (.cache_creation_input_tokens // 0) + (.output_tokens // 0)' "$@"
+}
+
+# Compact a session: ask the model for a comprehensive summary, move every
+# entry (and the manifest) into archive/<timestamp>/ inside the session dir,
+# and restart the live session from a single summary entry. The next request
+# then carries a small context; nothing is lost — the archive keeps the full
+# history, inspectable with the usual file tools.
+#   cmd_compact SESSION
+cmd_compact() {
+  _sess=$1
+  _dir=$(session_dir "${_sess}")
+  [ -d "${_dir}" ] || die "no such session: ${_dir}"
+  set -- "${_dir}"/[0-9]*.json
+  [ -e "$1" ] || { say "nothing to compact in ${_dir}"; return 0; }
+
+  # PreCompact — a hook may block compaction (exit 2) or emit extra guidance
+  # that is appended to the summarizer instruction.
+  _hp=$(jq -nc --arg e PreCompact --arg s "${_dir}" '{event:$e,session_dir:$s}')
+  if ! _hint=$(run_hooks PreCompact "${_hp}"); then
+    warn "[blocked] compaction blocked by hook: ${_hint}"
+    return 1
+  fi
+
+  _instr='Summarize this entire conversation so far. The summary will REPLACE the conversation as your only context, so be comprehensive: the user'\''s goals and constraints, every decision made and why, the current state of the work, exact file paths/commands/facts that matter, and what remains to be done. Reply with the summary only.'
+  [ -n "${_hint}" ] && _instr="${_instr}
+${_hint}"
+  # Ride the instruction on the existing last user message if there is one
+  # (messages must alternate roles), else append a fresh user message. No tools:
+  # this turn must produce prose.
+  _smsgs=$(cmd_assemble "${_sess}" | jq -c --arg t "${_instr}" '
+    if (length > 0) and (.[-1].role == "user")
+    then (.[-1].content += [{type:"text",text:$t}])
+    else . + [{role:"user",content:[{type:"text",text:$t}]}] end')
+  _req=$(build_request "${_smsgs}" '[]')
+  _resp=$(call_api "${_req}" "${_dir}") || { warn "[error] compaction failed: API call failed"; return 1; }
+  _resp=$(printf '%s' "${_resp}" | normalize_response)
+  _sum=$(jqv "${_resp}" -r '.content // [] | map(select(.type=="text").text) | join("\n")')
+  [ -n "${_sum}" ] || { warn "[error] compaction failed: empty summary"; return 1; }
+
+  # A trailing, not-yet-answered user prompt must survive compaction (the
+  # auto-trigger fires between `send` and the first step). _cut is the last
+  # entry that is NOT plain user text; everything after it is the pending
+  # prompt, kept aside and re-appended after the summary. tool_result entries
+  # are user-role but never pending — they pair with an archived tool_use.
+  _cut=""
+  for _f in "${_dir}"/[0-9]*.json; do
+    [ "$(jq -r '.role + "/" + .block.type' "${_f}")" = "user/text" ] || _cut=${_f}
+  done
+  [ -n "${_cut}" ] || { say "nothing to compact (no completed turns)"; return 0; }
+
+  _arch="${_dir}/archive/$(date -u +%Y%m%dT%H%M%SZ)"
+  _keep=$(mktemp -d 2>/dev/null || echo "/tmp/harsh_keep.$$"); mkdir -p "${_keep}"
+  mkdir -p "${_arch}" || die "cannot create ${_arch}"
+  _n=0; _after=0
+  for _f in "${_dir}"/[0-9]*.json; do
+    [ -e "${_f}" ] || continue
+    if [ "${_after}" = 1 ]; then
+      mv "${_f}" "${_keep}/"
+    else
+      mv "${_f}" "${_arch}/" && _n=$((_n + 1))
+      [ "${_f}" = "${_cut}" ] && _after=1
+    fi
+  done
+  [ -f "${_dir}/manifest.csv" ] && cp "${_dir}/manifest.csv" "${_arch}/manifest.csv"
+  : > "${_dir}/manifest.csv"
+  add_entry "${_dir}" user text "" \
+    "$(jq -nc --arg t "Summary of the conversation so far (earlier turns were compacted away; their full record is archived):
+
+${_sum}" '{type:"text",text:$t}')" '{"context":"compact"}'
+  for _f in "${_keep}"/[0-9]*.json; do
+    [ -e "${_f}" ] || continue
+    add_entry "${_dir}" "$(jq -r '.role' "${_f}")" "$(jq -r '.block.type' "${_f}")" \
+      "$(jq -r '.block.name // ""' "${_f}")" "$(jq -c '.block' "${_f}")"
+  done
+  rm -rf "${_keep}"
+  say "[harsh] compacted ${_n} entries into a summary (archive: ${_arch})"
+}
+
 # Call the model. Honors HARSH_MOCK for offline smoke testing.
 call_api() {
   _req=$1; _dir=$2
@@ -299,19 +435,72 @@ call_api() {
     return 1
   }
   # Provider auth differs: OpenAI uses a Bearer token; Anthropic uses x-api-key
-  # plus the dated anthropic-version header.
+  # plus the dated anthropic-version header. Headers are passed to curl through
+  # a private file (-H @file), never argv, so the key is not visible in `ps`;
+  # umask 077 keeps the file owner-only for its short life.
+  _hdr=$(umask 077; mktemp 2>/dev/null || echo "/tmp/harsh_hdr.$$")
+  _bodyf=$(umask 077; mktemp 2>/dev/null || echo "/tmp/harsh_body.$$")
   if [ "${HARSH_PROVIDER}" = openai ]; then
-    _resp=$(printf '%s' "${_req}" | curl -sS -X POST "${HARSH_API_URL}" \
-        -H "authorization: Bearer ${HARSH_API_KEY}" \
-        -H "content-type: application/json" \
-        --data-binary @-) || { warn "[error] curl request to ${HARSH_API_URL} failed"; return 1; }
+    printf 'authorization: Bearer %s\ncontent-type: application/json\n' \
+      "${HARSH_API_KEY}" > "${_hdr}"
   else
-    _resp=$(printf '%s' "${_req}" | curl -sS -X POST "${HARSH_API_URL}" \
-        -H "x-api-key: ${HARSH_API_KEY}" \
-        -H "anthropic-version: ${HARSH_API_VERSION}" \
-        -H "content-type: application/json" \
-        --data-binary @-) || { warn "[error] curl request to ${HARSH_API_URL} failed"; return 1; }
+    printf 'x-api-key: %s\nanthropic-version: %s\ncontent-type: application/json\n' \
+      "${HARSH_API_KEY}" "${HARSH_API_VERSION}" > "${_hdr}"
   fi
+  # Streaming path: ask for SSE, print text deltas to stderr as they arrive
+  # (stdout stays the captured response), and fold the event stream back into
+  # the canonical response shape afterwards. No retry loop here — a stream
+  # failure surfaces as the provider's error body via the same error path.
+  if stream_on; then
+    _evf=$(umask 077; mktemp 2>/dev/null || echo "/tmp/harsh_sse.$$"); : > "${_evf}"
+    printf '%s' "${_req}" | jq -c '. + {stream:true}' | curl -sS --no-buffer -X POST "${HARSH_API_URL}" \
+        -H @"${_hdr}" --data-binary @- 2>>"${HARSH_LOG_DIR}/curl.log" \
+      | while IFS= read -r _sline; do
+          printf '%s\n' "${_sline}" >> "${_evf}"
+          case "${_sline}" in
+            'data: '*'"text_delta"'*)
+              printf '%s' "${_sline#data: }" | jq -rj '.delta.text // empty' >&2 ;;
+          esac
+        done
+    rm -f "${_hdr}"
+    [ -s "${_evf}" ] || { rm -f "${_evf}" "${_bodyf}"; warn "[error] streaming request to ${HARSH_API_URL} returned nothing"; return 1; }
+    printf '\n' >&2
+    if grep -q '^data: ' "${_evf}"; then
+      _resp=$(sed -n 's/^data: //p' "${_evf}" | stream_assemble)
+    else
+      # Not SSE: an HTTP-level error body — pass it through to the error path.
+      _resp=$(cat "${_evf}")
+    fi
+    rm -f "${_evf}" "${_bodyf}"
+    printf '%s\n' "${_resp}" >> "${HARSH_LOG_DIR}/${_base}.response.log"
+    printf '%s' "${_resp}"
+    return 0
+  fi
+  # Transient failures (network, timeouts, 408/429/5xx — including Anthropic's
+  # 529 overloaded) retry with exponential backoff. Other non-2xx responses are
+  # passed through: cmd_step surfaces .error.message from the body.
+  _attempt=0; _delay=${HARSH_RETRY_DELAY}
+  while :; do
+    _code=$(printf '%s' "${_req}" | curl -sS -X POST "${HARSH_API_URL}" \
+        -H @"${_hdr}" --data-binary @- \
+        -o "${_bodyf}" -w '%{http_code}' 2>>"${HARSH_LOG_DIR}/curl.log") || _code=000
+    case "${_code}" in
+      2*) break ;;
+      ''|000|408|429|5*)
+        _attempt=$((_attempt + 1))
+        if [ "${_attempt}" -gt "${HARSH_RETRIES}" ]; then
+          rm -f "${_hdr}" "${_bodyf}"
+          warn "[error] request to ${HARSH_API_URL} failed after ${HARSH_RETRIES} retries (HTTP ${_code:-000})"
+          return 1
+        fi
+        warn "[retry] HTTP ${_code:-000} from API — attempt ${_attempt}/${HARSH_RETRIES}, waiting ${_delay}s"
+        sleep "${_delay}"
+        _delay=$((_delay * 2)) ;;
+      *) break ;;
+    esac
+  done
+  rm -f "${_hdr}"
+  _resp=$(cat "${_bodyf}"); rm -f "${_bodyf}"
   printf '%s\n' "${_resp}" >> "${HARSH_LOG_DIR}/${_base}.response.log"
   printf '%s' "${_resp}"
 }
@@ -330,6 +519,41 @@ mock_api() {
     (.messages[-1].content // []) |
     if type=="array" then (map(select(.type=="text").text) | join(" ")) else (.|tostring) end')
   case "${_last}" in
+    # Failure-path fixtures, so tests can exercise the engine's error handling
+    # offline: an API error body, a max_tokens truncation, and a parallel
+    # multi-tool turn.
+    *'[[mock:error]]'*)
+      if [ "${HARSH_PROVIDER}" = openai ]; then
+        jq -n '{error:{message:"mock API error",type:"invalid_request_error"}}'
+      else
+        jq -n '{type:"error",error:{type:"invalid_request_error",message:"mock API error"}}'
+      fi ;;
+    *'[[mock:truncate]]'*)
+      if [ "${HARSH_PROVIDER}" = openai ]; then
+        jq -n '{id:"chatcmpl_mock1", model:"mock-openai",
+          choices:[{message:{role:"assistant", content:"partial reply cut", tool_calls:null}, finish_reason:"length"}],
+          usage:{prompt_tokens:10, completion_tokens:5, prompt_tokens_details:{cached_tokens:0}}}'
+      else
+        jq -n '{content:[{type:"text",text:"partial reply cut"}],stop_reason:"max_tokens",
+          model:"mock-model", id:"msg_mock1", role:"assistant", type:"message",
+          usage:{input_tokens:10, output_tokens:5, cache_read_input_tokens:0, cache_creation_input_tokens:0}}'
+      fi ;;
+    *'[[mock:multitool]]'*)
+      if [ "${HARSH_PROVIDER}" = openai ]; then
+        jq -n '{id:"chatcmpl_mock1", model:"mock-openai",
+          choices:[{message:{role:"assistant", content:"two at once",
+            tool_calls:[
+              {id:"call_mockA", type:"function", function:{name:"bash", arguments:"{\"command\":\"echo one\"}"}},
+              {id:"call_mockB", type:"function", function:{name:"bash", arguments:"{\"command\":\"echo two\"}"}}]},
+            finish_reason:"tool_calls"}],
+          usage:{prompt_tokens:10, completion_tokens:5, prompt_tokens_details:{cached_tokens:0}}}'
+      else
+        jq -n '{content:[
+            {type:"text",text:"two at once"},
+            {type:"tool_use",id:"toolu_mockA",name:"bash",input:{command:"echo one"}},
+            {type:"tool_use",id:"toolu_mockB",name:"bash",input:{command:"echo two"}}],
+          stop_reason:"tool_use"}'
+      fi ;;
     *'[[tool:'*']]'*)
       _spec=${_last#*'[[tool:'}; _spec=${_spec%%']]'*}
       _tname=${_spec%%:*}; _targs=${_spec#*:}
@@ -515,7 +739,8 @@ do_tool_call() {
 
 # One model turn. Appends assistant blocks; if the model asked for tools, runs
 # them (do_tool_call) and appends tool_result blocks.
-# returns: 0 = finished, 2 = tool_use (caller should continue), 1 = error.
+# returns: 0 = finished, 2 = tool_use (caller should continue), 1 = error,
+#          3 = truncated at max_tokens (caller may continue the reply).
 cmd_step() {
   _dir=$(session_dir "$1")
   [ -d "${_dir}" ] || die "no such session: ${_dir}"
@@ -545,15 +770,27 @@ cmd_step() {
     _btype=$(jqv "${_block}" -r '.type'); _bname=$(jqv "${_block}" -r '.name // ""')
     if [ "${_i}" -eq 0 ]; then _m=${_meta}; else _m=""; fi
     add_entry "${_dir}" assistant "${_btype}" "${_bname}" "${_block}" "${_m}"
-    [ "${_btype}" = text ] && [ -z "${HARSH_QUIET:-}" ] && render_assistant "$(jqv "${_block}" -r '.text')"
+    # Streamed text was already printed live (call_api's delta path) — skip the
+    # replay; everything else renders as usual.
+    if [ "${_btype}" = text ] && [ -z "${HARSH_QUIET:-}" ] && ! stream_on; then
+      render_assistant "$(jqv "${_block}" -r '.text')"
+    fi
     _i=$((_i + 1))
   done
 
-  if [ "$(jqv "${_resp}" -r '.stop_reason // ""')" = tool_use ]; then
+  _stop=$(jqv "${_resp}" -r '.stop_reason // ""')
+  if [ "${_stop}" = tool_use ]; then
     jqv "${_resp}" -c '.content[] | select(.type=="tool_use")' | while IFS= read -r _tu; do
       do_tool_call "${_dir}" "${_tu}"
     done
     return 2
+  fi
+  # Hitting the output cap mid-reply must not read as a clean finish: the reply
+  # is incomplete. Signal the caller, which re-steps — the conversation then
+  # ends on an assistant message, so the model continues where it was cut off.
+  if [ "${_stop}" = max_tokens ]; then
+    warn "[warn] reply truncated at HARSH_MAX_TOKENS=${HARSH_MAX_TOKENS} — asking the model to continue"
+    return 3
   fi
   return 0
 }
@@ -562,8 +799,19 @@ cmd_step() {
 cmd_run() {
   _sess=$1
   _dir=$(session_dir "${_sess}")
-  _turns=0; _stops=0
+  _turns=0; _stops=0; _truncs=0
   while [ "${_turns}" -lt "${HARSH_MAX_TURNS}" ]; do
+    # Auto-compaction: without it the request grows without bound until the
+    # provider rejects it. Checked before each step using the previous turn's
+    # actual usage numbers (not an estimate). A failed compaction is non-fatal —
+    # worst case the next call fails with the provider's own error.
+    if [ "${HARSH_COMPACT_AT}" -gt 0 ]; then
+      _ctx=$(last_context_tokens "${_dir}")
+      if [ "${_ctx:-0}" -gt "${HARSH_COMPACT_AT}" ]; then
+        say "${C_DIM}↻ compacting context (~${_ctx} tokens > HARSH_COMPACT_AT=${HARSH_COMPACT_AT})${C_RST}"
+        cmd_compact "${_sess}" || warn "[warn] compaction failed; continuing with full context"
+      fi
+    fi
     cmd_step "${_sess}"; _rc=$?
     _turns=$((_turns + 1))
     case ${_rc} in
@@ -582,6 +830,16 @@ cmd_run() {
         fi
         return 0 ;;
       2) continue ;;
+      3)
+        # Truncated reply: re-step so the model continues it, but bounded — a
+        # reply that can't finish in a few extensions needs a bigger
+        # HARSH_MAX_TOKENS, not an unbounded loop.
+        if [ "${_truncs}" -lt 3 ]; then
+          _truncs=$((_truncs + 1))
+          continue
+        fi
+        warn "[error] reply still truncated after ${_truncs} continuations — raise HARSH_MAX_TOKENS"
+        return 1 ;;
       *) return 1 ;;
     esac
   done
@@ -595,7 +853,7 @@ cmd_ask() {
 }
 
 # Invoke a skill: load its instructions via the Skills tool, inject as a user
-# message, and run. Backs slash commands in the TUI.
+# message, and run. Backs slash commands in the REPL.
 cmd_skill() {
   _sess=$1; _name=$2; shift 2 2>/dev/null || shift $#
   _args=$*
@@ -690,8 +948,8 @@ ${_more}"
   return 0
 }
 
-# Default interactive mode: a dependency-free, line-based REPL. (harsh_tui.sh
-# is the richer fzf interface; this needs nothing beyond the core.)
+# Default interactive mode: a dependency-free, line-based REPL — it needs
+# nothing beyond the core.
 #
 # Input handling — why the native loop is the default:
 #   The native loop (read_prompt, below) puts the terminal in bracketed-paste
@@ -846,7 +1104,6 @@ With no command, harsh.sh starts an interactive REPL.
 
 Interactive:
   repl [SESSION]         Line-based REPL (default when no command is given).
-  (tui [SESSION] — the fzf chat TUI — is a command; see the Commands list below.)
 
 Engine primitives (built in):
   init|new [NAME]        Create a session; prints its directory.
@@ -856,6 +1113,7 @@ Engine primitives (built in):
   ask SESSION TEXT...    send + run in one go.
   skill SESSION NAME [A] Load a skill and run it.
   assemble SESSION       Print the Messages-API messages[] array.
+  compact SESSION        Summarize + archive the conversation; restart from the summary.
   path SESSION           Print the resolved session directory.
 
 Commands (extensible — drop a NAME.sh into \$HARSH_COMMANDS_DIR):
@@ -867,6 +1125,9 @@ Environment / config (see harsh.conf):
   HARSH_PROVIDER (anthropic | openai; default anthropic),
   HARSH_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY, HARSH_MODEL,
   HARSH_MAX_TOKENS, HARSH_SYSTEM_PROMPT, HARSH_MAX_TURNS,
+  HARSH_COMPACT_AT (auto-compaction threshold in tokens; 0 disables),
+  HARSH_RETRIES / HARSH_RETRY_DELAY (transient API failure backoff),
+  HARSH_STREAM=1 (stream replies live; anthropic only),
   HARSH_MOCK (offline test mode),
   HARSH_CACHE (Anthropic prompt caching, on by default; 0 to disable),
   HARSH_VERBOSE (print full tool output instead of a collapsed summary).
@@ -900,6 +1161,7 @@ case "${_cmd}" in
   ask)      cmd_ask "$@" ;;
   skill)    cmd_skill "$@" ;;
   assemble) cmd_assemble "$@" ;;
+  compact)  cmd_compact "$@" ;;
   path)     cmd_path "$@" ;;
   # Print the wire request a step would send (used by commands/request.sh so the
   # provider-specific builder lives in exactly one place).
@@ -907,6 +1169,10 @@ case "${_cmd}" in
     _m=$(cmd_assemble "$1")
     _t=$(sh "${HARSH_TOOLS_DIR}/tool.sh" schemas 2>/dev/null); [ -n "${_t}" ] || _t='[]'
     build_request "${_m}" "${_t}" ;;
+  # Fold raw Anthropic SSE (on stdin) into a canonical response. Internal —
+  # call_api's streaming path uses the same transform; exposed for tests.
+  stream-assemble)
+    sed -n 's/^data: //p' | stream_assemble ;;
   # --- meta -----------------------------------------------------------------
   commands) list_commands "$@" | sort ;;
   help|-h|--help) usage ;;

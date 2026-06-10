@@ -2,14 +2,14 @@
 # sessions — list existing sessions, newest first.
 #
 # Two faces, one command: a human table when shown on a terminal (with the
-# current session — HARSH_CURRENT_SESSION, set by the REPL/TUI — marked with ▸),
+# current session — HARSH_CURRENT_SESSION, set by the REPL — marked with ▸),
 # and raw rows when piped:
 #
 #     NAME<TAB>LABEL
 #
 # NAME is the resume key (field 1). LABEL is a ready-to-display string —
-# "MM-DD HH:MM   <turns>t   <topic>" — already aligned. The TUI's fzf picker
-# reads the piped rows (it shows fields 2..); the REPL shows the table.
+# "MM-DD HH:MM   <turns>t   <topic>" — already aligned. Scripts read the piped
+# rows; the REPL shows the table.
 set -u
 [ "${1:-}" = --describe ] && { printf 'sessions\tList existing sessions (newest first).\n'; exit 0; }
 _d=${HARSH_SESSIONS_DIR}

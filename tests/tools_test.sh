@@ -107,3 +107,50 @@ test_dispatcher_lists_and_aggregates() {
   assert_contains "$(sh "${ROOT}/tools/tool.sh" list)" 'bash'
   assert_eq "$(sh "${ROOT}/tools/tool.sh" schemas | jq 'type=="array" and length>0')" 'true'
 }
+
+# --- hardening regressions ----------------------------------------------------
+
+test_write_missing_content_is_error() {
+  _d=$(mktemp -d)
+  printf 'PRECIOUS' > "${_d}/f"
+  _out=$(tool write "{\"path\":\"${_d}/f\"}"); _rc=$?
+  assert_ne "${_rc}" 0 'write without content must fail'
+  # the historic bug: the file would be clobbered with the literal string "null"
+  assert_eq 'PRECIOUS' "$(cat "${_d}/f")" 'target untouched on bad input'
+  rm -rf "${_d}"
+}
+
+test_read_rejects_non_numeric_offset() {
+  _d=$(mktemp -d)
+  printf 'a\nb\n' > "${_d}/f"
+  _out=$(tool read "{\"path\":\"${_d}/f\",\"offset\":\"abc\"}"); _rc=$?
+  assert_ne "${_rc}" 0 'non-numeric offset must be an error, not an empty read'
+  assert_contains "${_out}" 'offset'
+  rm -rf "${_d}"
+}
+
+test_read_handles_missing_trailing_newline() {
+  _d=$(mktemp -d)
+  printf 'x\ny' > "${_d}/f"
+  _out=$(tool read "{\"path\":\"${_d}/f\"}")
+  assert_contains "${_out}" 'y'
+  rm -rf "${_d}"
+}
+
+test_grep_reports_truncation() {
+  _d=$(mktemp -d)
+  _i=0; while [ "${_i}" -lt 250 ]; do printf 'match line\n'; _i=$((_i+1)); done > "${_d}/f"
+  _out=$(tool grep "{\"pattern\":\"match\",\"path\":\"${_d}/f\"}")
+  assert_contains "${_out}" 'truncated at 200 lines'
+  rm -rf "${_d}"
+}
+
+test_bash_rejects_non_numeric_timeout() {
+  _out=$(tool bash '{"command":"echo hi","timeout":"xx"}'); _rc=$?
+  assert_ne "${_rc}" 0 'non-numeric timeout must fail'
+}
+
+test_dispatcher_rejects_path_traversal_names() {
+  printf '{}' | sh "${ROOT}/tools/tool.sh" call '../scripts/quality_gates' >/dev/null 2>&1; _rc=$?
+  assert_ne "${_rc}" 0 'path-escaping tool name must be rejected'
+}

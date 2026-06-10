@@ -1,5 +1,12 @@
 #!/usr/bin/env sh
-# PreToolUse/bash/10-guard.sh — block obviously destructive shell commands.
+# PreToolUse/bash/10-guard.sh — EXAMPLE: block a few obviously destructive
+# shell commands by substring match.
+#
+# This demonstrates the PreToolUse contract; it is NOT a security boundary.
+# Substring matching is trivially bypassed (`rm -fr`, variables, quoting…) and
+# the bash tool is an unsandboxed shell regardless. Treat it as a seatbelt
+# reminder and write a real policy hook (or wrap the tool) if you need
+# enforcement.
 #
 # This hook lives under PreToolUse/bash/, so harsh runs it ONLY before the
 # `bash` tool (a hook directly in PreToolUse/ would run before every tool).

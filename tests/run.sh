@@ -8,6 +8,8 @@
 # session, log, and hooks directories into that tempdir, so a run never touches
 # the real sessions/, logs/, or hooks/. HARSH_MOCK=1 keeps it offline.
 # FILTER, if given, restricts to tests whose "file:function" contains it.
+# HARSH_TEST_SH selects the shell that runs the harness-under-test (default
+# `sh`; e.g. HARSH_TEST_SH=zsh or HARSH_TEST_SH="busybox sh").
 set -u
 if [ -n "${ZSH_VERSION:-}" ]; then
   emulate sh 2>/dev/null || setopt sh_word_split 2>/dev/null || true

@@ -157,12 +157,3 @@ test_command_name_traversal_is_rejected() {
   hsh '../tool' >/dev/null 2>&1; _rc=$?
   assert_ne "${_rc}" 0 'path-traversal command name should fail'
 }
-
-test_tui_is_a_cli_only_command() {
-  # tui is now an ordinary CLI command (commands/cli/tui.sh), not an engine
-  # primitive: it lists under `commands`, and as a CLI-only verb /tui must NOT
-  # launch the full-screen TUI from the line REPL — it just reports CLI-only.
-  assert_contains "$(hsh commands)" 'tui '
-  _out=$(printf '%s\n' '/tui' '/quit' | hsh repl tuislash 2>&1)
-  assert_contains "${_out}" 'CLI-only'
-}
