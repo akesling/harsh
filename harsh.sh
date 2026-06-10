@@ -97,8 +97,8 @@ load_config() {
   done
   : "${HARSH_MAX_TURNS:=127}"
   # Auto-compaction: when the last turn's context exceeds this many tokens,
-  # cmd_run summarizes the conversation and restarts the session from the
-  # summary (full history is archived in the session dir). 0 disables.
+  # cmd_run invokes the drop-in `compact` command, which rewrites the live
+  # view to a summary (the full log stays in the session dir). 0 disables.
   : "${HARSH_COMPACT_AT:=150000}"
   case "${HARSH_COMPACT_AT}" in *[!0-9]*) die "HARSH_COMPACT_AT must be a number (tokens), got: ${HARSH_COMPACT_AT}" ;; esac
   # Hooks/commands/lib are optional; defaults sit next to harsh.sh. A missing
@@ -264,35 +264,38 @@ cmd_init() {
 cmd_path() { session_dir "$1"; }
 
 cmd_send() {
-  # -m META_JSON marks a synthetic entry (e.g. compact's summary): it is
-  # recorded with that metadata and bypasses UserPromptSubmit — hooks gate
-  # real user prompts, not engine bookkeeping written through a command.
-  _meta=""
-  if [ "${1:-}" = -m ]; then _meta=$2; shift 2; fi
   _dir=$(session_dir "$1"); shift; _text=$*
   [ -d "${_dir}" ] || die "no such session: ${_dir} (run: harsh.sh init)"
-  if [ -z "${_meta}" ]; then
-    # UserPromptSubmit — a hook may reject the prompt (exit 2) or emit context
-    # that is injected just before it (consecutive user blocks merge into one
-    # message).
-    _hp=$(jq -nc --arg e UserPromptSubmit --arg s "${_dir}" --arg p "${_text}" \
-          '{event:$e,session_dir:$s,prompt:$p}')
-    if ! _hc=$(run_hooks UserPromptSubmit "${_hp}"); then
-      warn "[blocked] prompt rejected by hook: ${_hc}"
-      return 1
-    fi
-    [ -n "${_hc}" ] && add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')"
+  # UserPromptSubmit — a hook may reject the prompt (exit 2) or emit context that
+  # is injected just before it (consecutive user blocks merge into one message).
+  _hp=$(jq -nc --arg e UserPromptSubmit --arg s "${_dir}" --arg p "${_text}" \
+        '{event:$e,session_dir:$s,prompt:$p}')
+  if ! _hc=$(run_hooks UserPromptSubmit "${_hp}"); then
+    warn "[blocked] prompt rejected by hook: ${_hc}"
+    return 1
   fi
+  [ -n "${_hc}" ] && add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')"
   _block=$(jq -nc --arg t "${_text}" '{type:"text",text:$t}')
-  add_entry "${_dir}" user text "" "${_block}" "${_meta}"
+  add_entry "${_dir}" user text "" "${_block}"
 }
 
-# Assemble the conversation files into a Messages-API `messages` array by
+# Assemble the live conversation into a Messages-API `messages` array by
 # grouping consecutive same-role blocks into one message.
+#
+# The manifest — not the directory — defines the live context: entry files are
+# an immutable, append-only log (they are never moved or renumbered), and
+# manifest.csv is the ordered view over them that context construction reads.
+# Rewriting the manifest (see cmd_remanifest / commands/compact.sh) changes
+# what the model sees next; the full log stays put for replay (`show`).
 cmd_assemble() {
   _dir=$(session_dir "$1")
-  set -- "${_dir}"/[0-9]*.json
-  [ -e "$1" ] || { printf '[]'; return 0; }
+  [ -f "${_dir}/manifest.csv" ] || { printf '[]'; return 0; }
+  set --
+  # shellcheck disable=SC2034  # named for clarity; only _file is used
+  while IFS=, read -r _seq _role _type _name _file _ts _status; do
+    [ -n "${_file}" ] && [ -f "${_dir}/${_file}" ] && set -- "$@" "${_dir}/${_file}"
+  done < "${_dir}/manifest.csv"
+  [ $# -gt 0 ] || { printf '[]'; return 0; }
   jq -s 'reduce .[] as $e ([];
       if (length > 0) and (.[-1].role == $e.role)
       then (.[0:-1] + [(.[-1] | .content += [$e.block])])
@@ -337,66 +340,132 @@ stream_assemble() {
          usage: ((.base.usage // {}) + .dusage)}'
 }
 
-# Approximate size (tokens) of the conversation as the API last saw it: the
-# most recent turn's usage covers the whole request context, plus what the
-# model added on top. Prints 0 when no turn has usage yet (fresh session).
+# Approximate size (tokens) of the LIVE conversation as the API last saw it:
+# the most recent turn's usage covers the whole request context, plus what the
+# model added on top. Reads the manifest, not the directory — after a manifest
+# rewrite the retired turns' usage must not re-trigger compaction. Prints 0
+# when no live turn has usage yet.
 last_context_tokens() {
   _dir=$1
-  set -- "${_dir}"/[0-9]*.json
-  [ -e "$1" ] || { printf '0'; return 0; }
+  [ -f "${_dir}/manifest.csv" ] || { printf '0'; return 0; }
+  set --
+  # shellcheck disable=SC2034  # named for clarity; only _file is used
+  while IFS=, read -r _seq _role _type _name _file _ts _status; do
+    [ -n "${_file}" ] && [ -f "${_dir}/${_file}" ] && set -- "$@" "${_dir}/${_file}"
+  done < "${_dir}/manifest.csv"
+  [ $# -gt 0 ] || { printf '0'; return 0; }
   jq -s '
     [.[] | .meta.usage // empty] | last // {}
     | (.input_tokens // 0) + (.cache_read_input_tokens // 0)
       + (.cache_creation_input_tokens // 0) + (.output_tokens // 0)' "$@"
 }
 
-# Archive a session's answered conversation into archive/<timestamp>/ inside
-# the session dir (entries + a manifest copy), resetting the live session. A
-# trailing, not-yet-answered user prompt survives in place, renumbered from
-# 0001 (tool_result entries are user-role but never pending — they pair with
-# an archived tool_use). Prints the archive directory; prints nothing and
-# succeeds when there is no completed turn to archive.
+# Rewrite the live manifest as a new generation. Entry files are an immutable,
+# append-only log; the manifest is just the ordered view over them that
+# context construction (cmd_assemble) reads — so "compaction", pinning, and
+# any other context-editing scheme reduce to: write a new view.
 #
-# This is the invariant-bearing write behind compaction: the engine owns the
-# on-disk format (numbering, filenames, manifest). The summarization *policy*
-# lives in the drop-in commands/compact.sh, which composes `archive` with
-# `send -m`.
-#   cmd_archive SESSION
-cmd_archive() {
+# Reads ONE spec (JSON) on stdin:
+#   { "manifest": ["0003", "@summary", "0007-user-text.json"],
+#     "entries":  { "summary": { "role":"user",
+#                                "block":{"type":"text","text":"…"},
+#                                "meta":{"context":"compact"} } } }
+# manifest: the new view, in order — existing entries by seq or filename, new
+# ones as "@KEY". entries: the new entries to compose, keyed for reference;
+# every key must be referenced (and every @KEY defined). New entries are
+# materialized as ordinary NNNN-*.json files, so the log stays uniform.
+#
+# Non-destructive by construction: the outgoing view is retired to
+# manifest-<ts>.csv and no entry file is ever touched, so any rewrite can be
+# undone by rewriting again. The engine validates references and atomicity
+# only — whether a view makes conversational sense (e.g. no orphaned
+# tool_result) is the calling policy's judgment (see commands/compact.sh).
+# Prints the retired generation's path.
+#   cmd_remanifest SESSION   (spec on stdin)
+cmd_remanifest() {
   _sess=$1
   _dir=$(session_dir "${_sess}")
   [ -d "${_dir}" ] || die "no such session: ${_dir}"
-  # _cut is the last entry that is NOT plain user text; everything after it is
-  # the pending prompt. No _cut → nothing answered → nothing to archive.
-  _cut=""
-  for _f in "${_dir}"/[0-9]*.json; do
-    [ -e "${_f}" ] || continue
-    [ "$(jq -r '.role + "/" + .block.type' "${_f}")" = "user/text" ] || _cut=${_f}
-  done
-  [ -n "${_cut}" ] || return 0
+  _spec=$(cat)
+  jqv "${_spec}" -e '(.manifest | type == "array")' >/dev/null 2>&1 \
+    || die "remanifest: spec must have a manifest array"
+  # Keys must be word-safe (they travel through shell loops), every @KEY
+  # referenced must be defined, and every defined entry must be referenced.
+  # shellcheck disable=SC2016  # $def/$ref are jq variables
+  jqv "${_spec}" -e '
+      ((.entries // {}) | keys) as $def
+      | ([.manifest[] | select(startswith("@")) | .[1:]]) as $ref
+      | ($def | all(test("^[A-Za-z0-9_-]+$")))
+        and ($ref - $def == []) and ($def - $ref == [])' >/dev/null 2>&1 \
+    || die "remanifest: @ refs and entries keys must match exactly (keys: [A-Za-z0-9_-]+)"
 
-  _arch="${_dir}/archive/$(date -u +%Y%m%dT%H%M%SZ)"
-  _keep=$(mktemp -d 2>/dev/null || echo "/tmp/harsh_keep.$$"); mkdir -p "${_keep}"
-  mkdir -p "${_arch}" || die "cannot create ${_arch}"
-  _after=0
-  for _f in "${_dir}"/[0-9]*.json; do
-    [ -e "${_f}" ] || continue
-    if [ "${_after}" = 1 ]; then
-      mv "${_f}" "${_keep}/"
-    else
-      mv "${_f}" "${_arch}/"
-      [ "${_f}" = "${_cut}" ] && _after=1
-    fi
+  # Resolve every existing-entry reference (seq or filename) to a file BEFORE
+  # mutating anything, so a bad spec changes nothing. (Refs are seqs or
+  # sanitized filenames — never contain whitespace.)
+  for _ref in $(jqv "${_spec}" -r '.manifest[] | select(startswith("@") | not)'); do
+    _resolve_ref "${_dir}" "${_ref}" >/dev/null || die "remanifest: no such entry: ${_ref}"
   done
-  [ -f "${_dir}/manifest.csv" ] && cp "${_dir}/manifest.csv" "${_arch}/manifest.csv"
-  : > "${_dir}/manifest.csv"
-  for _f in "${_keep}"/[0-9]*.json; do
-    [ -e "${_f}" ] || continue
-    add_entry "${_dir}" "$(jq -r '.role' "${_f}")" "$(jq -r '.block.type' "${_f}")" \
-      "$(jq -r '.block.name // ""' "${_f}")" "$(jq -c '.block' "${_f}")"
+
+  # Snapshot the outgoing view first; entries materialized below land in the
+  # log (and append rows to the live manifest, which is about to be replaced).
+  _gen="${_dir}/manifest-$(date -u +%Y%m%dT%H%M%SZ).csv"
+  cp "${_dir}/manifest.csv" "${_gen}" 2>/dev/null || : > "${_gen}"
+
+  # Materialize the new entries and remember key -> filename.
+  _map=""
+  for _key in $(jqv "${_spec}" -r '(.entries // {}) | keys[]'); do
+    # shellcheck disable=SC2016  # $k is a jq variable
+    _e=$(jqv "${_spec}" -c --arg k "${_key}" '.entries[$k]')
+    _before=$(next_seq "${_dir}")
+    add_entry "${_dir}" \
+      "$(jqv "${_e}" -r '.role // "user"')" \
+      "$(jqv "${_e}" -r '.block.type // "text"')" \
+      "$(jqv "${_e}" -r '.block.name // ""')" \
+      "$(jqv "${_e}" -c '.block')" \
+      "$(jqv "${_e}" -c '.meta // empty')"
+    set -- "${_dir}/${_before}"-*.json
+    _map="${_map}${_key} $(basename "$1")
+"
   done
-  rm -rf "${_keep}"
-  printf '%s\n' "${_arch}"
+
+  # Write the new view, then move it into place (same dir, so the swap is as
+  # atomic as the filesystem allows). Each row is derived from the entry file
+  # itself — the spec never supplies row data, only references.
+  _tmp="${_dir}/.manifest.tmp.$$"
+  : > "${_tmp}"
+  for _ref in $(jqv "${_spec}" -r '.manifest[]'); do
+    case "${_ref}" in
+      @*)
+        _file=$(printf '%s' "${_map}" | while IFS=' ' read -r _k _v; do
+                  [ "${_k}" = "${_ref#@}" ] && { printf '%s' "${_v}"; break; }
+                done) ;;
+      *) _file=$(_resolve_ref "${_dir}" "${_ref}") ;;
+    esac
+    _seq=${_file%%-*}
+    jq -r --arg seq "${_seq}" --arg file "${_file}" \
+       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '[$seq, .role, .block.type,
+        ((.block.name // "") | gsub("[^A-Za-z0-9_.-]"; "_")),
+        $file, $ts, "ok"] | join(",")' \
+      "${_dir}/${_file}" >> "${_tmp}"
+  done
+  mv "${_tmp}" "${_dir}/manifest.csv"
+  printf '%s\n' "${_gen}"
+}
+
+# Resolve an entry reference — a seq ("7", "0007") or a filename — to the
+# entry's filename in DIR. Prints it, or returns 1.
+_resolve_ref() {
+  _rdir=$1; _r=$2
+  case "${_r}" in
+    *.json) [ -f "${_rdir}/${_r}" ] && { printf '%s' "${_r}"; return 0; } ;;
+    *[!0-9]*) return 1 ;;
+    *)
+      _rs=$(printf '%04d' "${_r}")
+      set -- "${_rdir}/${_rs}"-*.json
+      [ -e "$1" ] && { basename "$1"; return 0; } ;;
+  esac
+  return 1
 }
 
 # Call the model. Honors HARSH_MOCK for offline smoke testing.
@@ -1095,14 +1164,15 @@ Interactive:
 
 Engine primitives (built in):
   init|new [NAME]        Create a session; prints its directory.
-  send [-m META] SESSION TEXT...
-                         Append a user message (-m: synthetic entry w/ metadata).
+  send SESSION TEXT...   Append a user message.
   step SESSION           Run one model turn (executes tools if requested).
   run SESSION            Run the agent loop to completion.
   ask SESSION TEXT...    send + run in one go.
   skill SESSION NAME [A] Load a skill and run it.
-  assemble SESSION       Print the Messages-API messages[] array.
-  archive SESSION        Move the answered history into archive/<ts>/ (keeps a pending prompt).
+  assemble SESSION       Print the Messages-API messages[] array (the live view).
+  remanifest SESSION     Rewrite the live view from a spec on stdin; entry
+                         files never move and the old view is retired to
+                         manifest-<ts>.csv (powers compaction).
   path SESSION           Print the resolved session directory.
 
 Commands (extensible — drop a NAME.sh into \$HARSH_COMMANDS_DIR):
@@ -1150,7 +1220,7 @@ case "${_cmd}" in
   ask)      cmd_ask "$@" ;;
   skill)    cmd_skill "$@" ;;
   assemble) cmd_assemble "$@" ;;
-  archive)  cmd_archive "$@" ;;
+  remanifest) cmd_remanifest "$@" ;;
   path)     cmd_path "$@" ;;
   # Run hooks for EVENT with PAYLOAD_JSON (and optional per-TOOL scope):
   # context on stdout, exit 2 = blocked. Lets drop-in commands (e.g. compact)

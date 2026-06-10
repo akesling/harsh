@@ -1,26 +1,44 @@
 #!/usr/bin/env sh
-# Context compaction: the drop-in `compact` command summarizes + archives and
-# restarts the session (composing the engine's `archive` and `send -m`
-# primitives); the auto-trigger in cmd_run fires on the previous turn's usage
-# and resolves the command like any other; a pending (unanswered) prompt
-# survives; PreCompact hooks can block.
+# Context compaction: the drop-in `compact` command summarizes the live view
+# and rewrites the manifest to [summary, pending prompt] via the engine's
+# `remanifest` primitive. Entry files never move; the outgoing view is
+# retired as manifest-<ts>.csv; the auto-trigger in cmd_run fires on the
+# previous turn's usage and resolves the command like any other; a pending
+# (unanswered) prompt survives; PreCompact hooks can block.
 
-test_compact_archives_and_restarts_from_summary() {
+test_compact_rewrites_view_and_keeps_log() {
   _s=$(hnew cmp)
   hsh -q ask "${_s}" 'first topic' >/dev/null
   hsh -q ask "${_s}" 'second topic' >/dev/null
   hsh -q compact "${_s}" || fail "compact failed"
   _dir=$(hsh path "${_s}")
-  # The full history moved into archive/<ts>/ (4 entries + manifest copy)…
-  set -- "${_dir}"/archive/*/[0-9]*.json
-  [ -e "$1" ] || fail "no archived entries"
-  assert_eq 4 "$#" 'all entries archived'
-  set -- "${_dir}"/archive/*/manifest.csv
-  [ -e "$1" ] || fail "manifest not archived"
-  # …and the live session restarts as exactly one summary entry.
+  # The outgoing view is retired as a manifest generation with all 4 rows…
+  set -- "${_dir}"/manifest-*.csv
+  [ -e "$1" ] || fail "no retired manifest generation"
+  assert_eq 4 "$(grep -c . "$1")" 'retired view holds the pre-compaction rows'
+  # …every entry file stays in the log (4 originals + the summary)…
+  set -- "${_dir}"/[0-9]*.json
+  assert_eq 5 "$#" 'no entry file moved or deleted'
+  # …and the live view is exactly one summary message.
   _msgs=$(hsh assemble "${_s}")
   assert_eq 1 "$(printf '%s' "${_msgs}" | jq 'length')" 'one message after compaction'
   assert_contains "$(printf '%s' "${_msgs}" | jq -r '.[0].content[0].text')" 'compacted away'
+}
+
+test_show_replays_full_history_after_compaction() {
+  _s=$(hnew cmpreplay)
+  hsh -q ask "${_s}" 'the original first prompt' >/dev/null
+  hsh -q compact "${_s}" || fail "compact failed"
+  _dir=$(hsh path "${_s}")
+  # The live view references only the summary entry (0003)…
+  assert_eq 1 "$(grep -c . "${_dir}/manifest.csv")" 'one live row'
+  assert_contains "$(cat "${_dir}/manifest.csv")" '0003-user-text.json'
+  assert_not_contains "$(cat "${_dir}/manifest.csv")" '0001-user-text.json'
+  # …while the log keeps every entry, so show replays the whole evolution
+  # (original turns and summary) from one copyable directory.
+  set -- "${_dir}"/[0-9]*.json
+  assert_eq 3 "$#" 'all entries remain in the log'
+  assert_contains "$(hsh show "${_s}")" 'the original first prompt'
 }
 
 test_compact_is_noop_on_fresh_session() {
@@ -35,14 +53,16 @@ test_autocompact_triggers_and_keeps_pending_prompt() {
   _s=$(hnew cmpauto)
   hsh -q ask "${_s}" 'seed turn' >/dev/null
   # Mock usage totals 15 tokens; a threshold of 5 forces compaction on the next
-  # run, after the new prompt is already recorded — that prompt must survive.
+  # run, after the new prompt is already recorded — that prompt must survive,
+  # verbatim, after the summary.
   _out=$(HARSH_COMPACT_AT=5 hsh ask "${_s}" 'pending prompt survives' 2>&1) || fail "run failed: ${_out}"
   assert_contains "${_out}" 'compacting context'
   _dir=$(hsh path "${_s}")
-  [ -d "${_dir}/archive" ] || fail "no archive created"
-  _msgs=$(hsh assemble "${_s}")
-  assert_contains "$(printf '%s' "${_msgs}" | jq -r '.[0].content | map(.text) | join(" ")')" \
-    'pending prompt survives'
+  set -- "${_dir}"/manifest-*.csv
+  [ -e "$1" ] || fail "no retired manifest generation"
+  _first=$(hsh assemble "${_s}" | jq -r '.[0].content')
+  assert_contains "$(printf '%s' "${_first}" | jq -r '.[0].text')" 'compacted away'
+  assert_contains "$(printf '%s' "${_first}" | jq -r '.[1].text')" 'pending prompt survives'
 }
 
 test_autocompact_disabled_with_zero() {
@@ -50,7 +70,8 @@ test_autocompact_disabled_with_zero() {
   hsh -q ask "${_s}" 'seed' >/dev/null
   _out=$(HARSH_COMPACT_AT=0 hsh ask "${_s}" 'again' 2>&1) || fail "run failed"
   assert_not_contains "${_out}" 'compacting context'
-  [ -d "$(hsh path "${_s}")/archive" ] && fail "archive should not exist"
+  set -- "$(hsh path "${_s}")"/manifest-*.csv
+  [ -e "$1" ] && fail "no manifest generation should exist"
   return 0
 }
 
@@ -60,12 +81,12 @@ echo "not now"; exit 2
 EOF
   _s=$(hnew cmphook)
   hsh -q ask "${_s}" 'a turn' >/dev/null
-  set -- "$(hsh path "${_s}")"/[0-9]*.json; _before=$#
+  _before=$(grep -c . "$(hsh path "${_s}")/manifest.csv")
   _out=$(hsh compact "${_s}" 2>&1); _rc=$?
   assert_ne "${_rc}" 0 'blocked compaction must fail'
   assert_contains "${_out}" 'blocked'
-  set -- "$(hsh path "${_s}")"/[0-9]*.json; _after=$#
-  assert_eq "${_before}" "${_after}" 'entries untouched when blocked'
+  _after=$(grep -c . "$(hsh path "${_s}")/manifest.csv")
+  assert_eq "${_before}" "${_after}" 'live view untouched when blocked'
 }
 
 test_precompact_hook_context_reaches_summarizer() {
@@ -110,4 +131,16 @@ test_summarizer_scratch_session_is_inspectable() {
   _sdir=$(dirname "$(hsh path cmpscratch)")
   set -- "${_sdir}"/compact-cmpscratch-*
   [ -d "$1" ] || fail "no compact- scratch session found"
+}
+
+test_compaction_does_not_retrigger_itself() {
+  # After a rewrite, the retired turns' usage must not re-trip the threshold:
+  # last_context_tokens reads the live view, which post-compaction has no
+  # usage yet.
+  _s=$(hnew cmponce)
+  hsh -q ask "${_s}" 'seed turn' >/dev/null
+  HARSH_COMPACT_AT=5 hsh -q ask "${_s}" 'second' >/dev/null 2>&1
+  _dir=$(hsh path "${_s}")
+  set -- "${_dir}"/manifest-*.csv
+  assert_eq 1 "$#" 'exactly one compaction per threshold crossing within a run'
 }

@@ -26,15 +26,15 @@ harsh/
 ├── scripts/          # dev tooling (quality_gates.sh)
 ├── sessions/         # one directory per conversation
 │   └── <session>/
-│       ├── manifest.csv          # one line per entry (metadata)
-│       ├── NNNN-role-type[-name].json   # one file per entry
-│       └── archive/<ts>/         # full pre-compaction history (see below)
+│       ├── manifest.csv          # the LIVE VIEW: one row per entry, in order
+│       ├── manifest-<ts>.csv     # retired views (one per rewrite/compaction)
+│       └── NNNN-role-type[-name].json   # the immutable entry log
 └── logs/             # request/response logs
 ```
 
 ## Design
 
-### Conversation = a folder of files + a manifest
+### Conversation = an immutable log + a live view
 
 Each conversation entry is a single JSON file holding one content **block**
 tagged with its role:
@@ -43,19 +43,30 @@ tagged with its role:
 { "role": "assistant", "block": { "type": "tool_use", "id": "...", "name": "bash", "input": {"command": "ls"} } }
 ```
 
-Files are named `NNNN-<role>-<type>[-<name>].json` and sort in conversation
-order. `harsh.sh assemble` groups consecutive same-role blocks into the
-Anthropic Messages API `messages[]` array — so the on-disk granularity is "one
-per turn/tool call" while the wire format stays correct.
+Files are named `NNNN-<role>-<type>[-<name>].json` and form an **append-only
+log**: they are never moved, renumbered, or deleted, so `#SEQ` is a stable
+identity forever and copying the one session directory copies the complete
+history.
 
-`manifest.csv` carries only lightweight metadata, one comma-free line per entry:
+`manifest.csv` is the **live view** over that log — one comma-free row per
+entry, in order:
 
 ```
 seq,role,type,name,file,timestamp,status
 ```
 
-A process interested in marginal additions can simply `tail -f manifest.csv`
-and react to each new line.
+`harsh.sh assemble` builds the Anthropic Messages API `messages[]` array from
+the manifest (grouping consecutive same-role blocks), so *the manifest decides
+what the model sees next* while the log keeps everything that ever happened.
+Rewriting the view is a first-class operation: `harsh.sh remanifest SESSION`
+takes a spec on stdin — an ordered list of entry references plus optional new
+composed entries — retires the outgoing view as `manifest-<ts>.csv`, and
+installs the new one. Non-destructive by construction (the log and every prior
+generation survive), which is what makes compaction, pinning, and any other
+context-editing scheme safe to experiment with: a bad view is fixed by writing
+another view. `show` replays the full log, evolution included; `assemble` /
+`request` show the live context. A process interested in marginal additions
+can still `tail -f manifest.csv` and react to each new line.
 
 ### Providers (Anthropic · OpenAI)
 
@@ -123,7 +134,7 @@ along in the environment so sub-agents can't recurse forever.
 CLI verbs are a directory too. `harsh.sh` keeps a small set of **engine
 primitives** in-process — they mutate state or drive the loop and can't be
 externalized: `init`/`new`, `send`, `step`, `run`, `ask`, `skill`, `assemble`,
-`archive`, `path`, `run-hooks`, and `repl` (the line-REPL loop). Everything
+`remanifest`, `path`, `run-hooks`, and `repl` (the line-REPL loop). Everything
 else is a drop-in `commands/NAME.sh` resolved from `HARSH_COMMANDS_DIR` —
 including the shipped derived commands (`show`, `final`, `outline`, `verbose`,
 `manifest`, `sessions`, `session`, `resume`, `request`, `tools`, `schemas`,
@@ -299,16 +310,19 @@ Three things keep a long agentic session alive:
   `HARSH_COMPACT_AT` tokens (default 150 000, measured from the API's own
   usage numbers, not an estimate), the loop invokes the **drop-in `compact`
   command**, which asks the model for a comprehensive summary (in a scratch
-  `compact-*` sub-session, so the whole act is auditable), moves the history
-  into `archive/<timestamp>/` inside the session directory, and continues
-  from that one summary entry. A just-typed, not-yet-answered prompt
-  survives. Nothing is deleted — the archive holds every original entry plus
-  the manifest. Run it by hand with `harsh.sh compact SESSION` or `/compact`
-  in the REPL; a `PreCompact` hook can block it (exit 2) or append guidance
-  to the summarizer instruction. Set `HARSH_COMPACT_AT=0` to disable. The
-  engine owns only the trigger and the invariant-bearing writes (`archive`,
-  `send -m`); the summarization *policy* is `commands/compact.sh` — edit it
-  to change what the summary asks for, or delete it to opt out entirely.
+  `compact-*` sub-session, so the whole act is auditable) and then rewrites
+  the live view to `[summary, pending prompt]` via `remanifest`. A
+  just-typed, not-yet-answered prompt survives verbatim — a summary can only
+  stand in for content the model has already processed. Nothing is deleted:
+  every entry file stays in the log and the outgoing view is retired as
+  `manifest-<ts>.csv`, so `show` replays the whole evolution and any rewrite
+  can be undone by rewriting again. Run it by hand with `harsh.sh compact
+  SESSION` or `/compact` in the REPL; a `PreCompact` hook can block it
+  (exit 2) or append guidance to the summarizer instruction. Set
+  `HARSH_COMPACT_AT=0` to disable. The engine owns only the trigger and the
+  view-rewrite mechanics; the summarization *policy* is
+  `commands/compact.sh` — edit it to change the scheme (or build a different
+  one on `remanifest`), delete it to opt out entirely.
 - **Retry with backoff.** Transient API failures — network errors, timeouts,
   408/429/5xx (including Anthropic's 529 overloaded) — retry up to
   `HARSH_RETRIES` times (default 3), waiting `HARSH_RETRY_DELAY` seconds
@@ -343,9 +357,11 @@ Run `./harsh.sh help` for the full list. Highlights:
 | `run SESSION` | Run the loop to completion |
 | `ask SESSION TEXT` | `send` + `run` |
 | `skill SESSION NAME [ARGS]` | Load and run a skill |
-| `compact SESSION` | Summarize + archive the conversation; restart from the summary |
+| `compact SESSION` | Summarize; rewrite the live view to [summary, pending prompt] |
+| `remanifest SESSION` | Rewrite the live view from a spec on stdin (the log never moves) |
 | `final SESSION` | Print the last assistant message (sub-agent result) |
-| `assemble` / `request` / `manifest` / `show` | Inspect state |
+| `assemble` / `request` | The live context (what the model sees next) |
+| `manifest` / `show` / `outline` | Inspect state (`show` replays the full log) |
 | `usage SESSION` | Token usage + cache hit rate + approx cost |
 | `tools` / `schemas` / `skills` | Discover capabilities |
 
