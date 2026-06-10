@@ -57,7 +57,7 @@ test("VFS + path resolution", () => {
   const vfs = buildVFS(INDEX.files);
   __test.setVfs(vfs);
   expect(vfs.has("tools")).toBe(true);
-  expect(vfs.has("hooks/PreToolUse/bash")).toBe(true);
+  expect(vfs.has("hooks/PreToolUse")).toBe(true);
   expect(vfs.get("tools")!.files.has("agent.sh")).toBe(true);
   __test.setCwd("tools");
   expect(resolvePath("..")).toBe("");

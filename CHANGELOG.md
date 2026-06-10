@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Tool permissions, built entirely as hooks** (no policy logic in the core):
+  `hooks/PreToolUse/10-permissions.sh` is a declarative, layered gate
+  (session grants → project `.harsh/permissions.json` → user config → built-in
+  default) deciding allow / ask / deny per call. `ask` prompts on the terminal
+  (`y`/`a`/`n`), persists session grants, and fails **closed** with no
+  terminal; denials teach the model; every decision is audited to
+  `permissions.log` in the session dir. Dormant until opted in via
+  `HARSH_PERMISSIONS_MODE` or a policy file. Manage with `harsh.sh permissions`
+  (`/permissions` in the REPL). Replaces the old `PreToolUse/bash/10-guard.sh`
+  example, whose rules became the default policy.
+- **PreToolUse input rewriting**: a hook may rewrite a tool call's input by
+  writing a replacement payload to `HARSH_HOOK_REWRITE_OUT`. Rewrites chain in
+  filename order, so authorization and execution-wrapping compose. Generic and
+  backward-compatible (no-op when the var is unset).
+- **`hooks/PreToolUse/20-sandbox.sh`** (opt-in `HARSH_SANDBOX=1`): a rewriter
+  that wraps `bash` commands in `sandbox-exec`/`bwrap` for confined execution —
+  the enforcement wall beneath the permission policy brain, and the worked
+  example of rewrite-based sandboxing.
+
+### Fixed
+- `harsh.sh hooks` now lists `PreCompact` hooks (was omitted).
+
 ## 0.2.0 — 2026-06-09
 
 The "double down on the core" release: the fzf TUI is gone, and the engine
