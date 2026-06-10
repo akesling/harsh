@@ -24,7 +24,7 @@ jobs:
     name: shell quality gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # quality_gates.sh shells out to jq, shellcheck, and dash/bash/zsh/busybox
       # for the multi-shell parse. ubuntu-latest ships jq, bash, and dash; add
@@ -47,7 +47,7 @@ jobs:
           - { shell: zsh,          package: zsh }
           - { shell: 'busybox sh', package: busybox }
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install shell
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.package }}
@@ -59,7 +59,7 @@ jobs:
     name: tests (macOS, BSD userland)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Run test suite
         run: sh tests/run.sh
@@ -68,7 +68,7 @@ jobs:
     name: site (build + tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install deps
