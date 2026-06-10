@@ -65,7 +65,11 @@ site/
 ├── tsconfig.json
 ├── src/
 │   ├── app.ts          # client runtime (bundled to dist/assets/app.js)
+│   ├── copymode.ts     # tmux-style copy mode for the pop-down terminal
+│   ├── lineedit.ts     # vi/emacs line editing for the terminal input
 │   ├── app.test.ts     # unit tests (logic, search, highlighting)
+│   ├── copymode.test.ts# unit tests for copy mode
+│   ├── lineedit.test.ts# unit tests for line editing
 │   ├── app.boot.test.ts# integration test: full render, no fetch
 │   └── generated.json  # build-time data (git-ignored)
 ├── assets/

@@ -21,17 +21,38 @@ if [ -n "${ZSH_VERSION:-}" ]; then
 fi
 _repo=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 
+usage() {
+  cat <<'EOF'
+install.sh — install harsh: copy the runtime to ~/.local/share/harsh and put a
+short `ha` launcher on your PATH.
+
+  ./install.sh                 copy install (the checkout becomes disposable)
+  ./install.sh --link          point at the checkout instead of copying (dev)
+  ./install.sh --prefix DIR    bin dir for the launcher (default: ~/.local/bin)
+  ./install.sh --name NAME     launcher name (default: ha)
+  ./install.sh --share DIR     install root (default: ~/.local/share/harsh)
+  ./install.sh --config FILE   config path (default: ~/.config/harsh/harsh.conf)
+  ./install.sh --data DIR      session/log dir (default: the install root)
+  ./install.sh --uninstall     remove the launcher (keeps config + data)
+EOF
+}
+
 _prefix=""; _name="ha"; _share=""; _conf=""; _data=""; _link=0; _uninstall=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --prefix) _prefix=$2; shift 2 ;;
-    --name)   _name=$2;   shift 2 ;;
-    --share)  _share=$2;  shift 2 ;;
-    --config) _conf=$2;   shift 2 ;;
-    --data)   _data=$2;   shift 2 ;;
+    --prefix|--name|--share|--config|--data)
+      [ $# -ge 2 ] || { printf 'install.sh: %s requires a value\n' "$1" >&2; exit 2; }
+      case "$1" in
+        --prefix) _prefix=$2 ;;
+        --name)   _name=$2 ;;
+        --share)  _share=$2 ;;
+        --config) _conf=$2 ;;
+        --data)   _data=$2 ;;
+      esac
+      shift 2 ;;
     --link)   _link=1;    shift ;;
     --uninstall) _uninstall=1; shift ;;
-    -h|--help) sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) printf 'install.sh: unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -51,11 +72,18 @@ _target="${_prefix}/${_name}"
 
 if [ "${_uninstall}" = 1 ]; then
   if [ -e "${_target}" ] || [ -h "${_target}" ]; then
-    rm -f "${_target}" && printf 'removed %s\n' "${_target}"
+    # Only remove something this installer wrote — never an unrelated file
+    # that happens to sit at prefix/name.
+    if grep -q 'harsh launcher' "${_target}" 2>/dev/null; then
+      rm -f "${_target}" && printf 'removed %s\n' "${_target}"
+    else
+      printf 'refusing to remove %s: not a harsh launcher\n' "${_target}" >&2
+      exit 1
+    fi
   else
     printf 'nothing to remove at %s\n' "${_target}"
   fi
-  printf 'left config (%s) and data (%s) untouched.\n' "${_conf}" "${_data}"
+  printf 'left config (%s) and data (%s) untouched (paths shown assume the default/flag values you passed).\n' "${_conf}" "${_data}"
   printf 'to remove the runtime too: rm -rf %s\n' "${_share}"
   exit 0
 fi
@@ -76,7 +104,7 @@ if [ "${_link}" = 0 ]; then
     mkdir -p "${_share}/${_d}"
     cp -R "${_repo}/${_d}/." "${_share}/${_d}/" || { printf 'install.sh: copy of %s failed\n' "${_d}" >&2; exit 1; }
   done
-  cp "${_repo}/harsh.sh" "${_repo}/harsh_tui.sh" "${_share}/" || { printf 'install.sh: copy failed\n' >&2; exit 1; }
+  cp "${_repo}/harsh.sh" "${_share}/" || { printf 'install.sh: copy failed\n' >&2; exit 1; }
   chmod +x "${_share}/harsh.sh" 2>/dev/null || true
   printf 'copied runtime to %s\n' "${_share}"
 else
@@ -88,8 +116,14 @@ mkdir -p "$(dirname "${_conf}")" "${_data}/sessions" "${_data}/logs" \
   || { printf 'install.sh: cannot create config/data dirs\n' >&2; exit 1; }
 if [ -e "${_conf}" ]; then
   printf 'kept existing config %s\n' "${_conf}"
+  # Re-installing into a different root with an old config silently runs the
+  # old copy — warn so a changed --share/--data isn't lost to a stale config.
+  if ! grep -Fq "${_share}/tools" "${_conf}" 2>/dev/null; then
+    printf 'warning: %s does not reference %s — if you meant to move the install,\n' "${_conf}" "${_share}" >&2
+    printf '         update the directories in the config (or remove it and re-run).\n' >&2
+  fi
 else
-  cat > "${_conf}" <<EOF
+  cat > "${_conf}" <<EOF || { printf 'install.sh: cannot write %s\n' "${_conf}" >&2; exit 1; }
 # harsh configuration — written by install.sh.
 # Directories are absolute so harsh finds them regardless of how it is launched.
 HARSH_TOOLS_DIR="${_share}/tools"
@@ -104,8 +138,8 @@ EOF
   printf 'wrote config %s\n' "${_conf}"
 fi
 
-# Write the launcher: export HARSH_CONFIG (inherited by every subprocess,
-# including the TUI) and exec the installed harsh.sh by absolute path.
+# Write the launcher: export HARSH_CONFIG (inherited by every subprocess) and
+# exec the installed harsh.sh by absolute path.
 mkdir -p "${_prefix}" || { printf 'install.sh: cannot create %s\n' "${_prefix}" >&2; exit 1; }
 {
   printf '#!/usr/bin/env sh\n'
@@ -114,7 +148,7 @@ mkdir -p "${_prefix}" || { printf 'install.sh: cannot create %s\n' "${_prefix}" 
   # shellcheck disable=SC2016  # $@ must stay literal in the generated launcher
   printf 'exec sh "%s/harsh.sh" "$@"\n' "${_share}"
 } > "${_target}" || { printf 'install.sh: cannot write %s\n' "${_target}" >&2; exit 1; }
-chmod +x "${_target}"
+chmod +x "${_target}" || { printf 'install.sh: cannot chmod %s\n' "${_target}" >&2; exit 1; }
 printf 'wrote launcher %s\n' "${_target}"
 
 # PATH advice + next steps.
@@ -129,6 +163,5 @@ cat <<EOF
 Installed. Set a key, then go:
   export ANTHROPIC_API_KEY=sk-ant-...
   ${_name}              # REPL  (or: HARSH_MOCK=1 ${_name}  to try it offline)
-  ${_name} tui          # fzf chat TUI
   ${_name} help
 EOF

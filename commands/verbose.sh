@@ -5,7 +5,7 @@ set -u
 [ "${1:-}" = --describe ] && { printf 'verbose SESSION SEQ\tExpand one entry (#SEQ) in full — tool input/output.\n'; exit 0; }
 # shellcheck source=/dev/null
 . "${HARSH_LIB_DIR}/render.sh"
-_dir=$(sh "${HARSH_SELF}" path "$1"); _want=$2
+_dir=$(sh "${HARSH_SELF}" path "$1"); _want=${2:-}
 _want=${_want#\#}                       # tolerate a leading '#'
 case "${_want}" in *[!0-9]*|'') printf 'usage: verbose SESSION #SEQ\n' >&2; exit 1 ;; esac
 _want=$(printf '%04d' "${_want}")       # normalize to the zero-padded filename form

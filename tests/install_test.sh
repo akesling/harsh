@@ -66,8 +66,3 @@ test_installer_uninstall_removes_launcher() {
   [ -f "${_d}/cfg/harsh.conf" ] || fail "uninstall should keep config"
   rm -rf "${_d}"
 }
-
-test_tui_subcommand_dispatches() {
-  printf '/quit\n' | hsh tui ttest >/dev/null 2>&1; _rc=$?
-  assert_eq "${_rc}" 0 'ha tui … exits cleanly'
-}

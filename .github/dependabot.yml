@@ -1,0 +1,12 @@
+# Keep the pinned action SHAs (and the site's one runtime dep) fresh.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: bun
+    directory: /site
+    schedule:
+      interval: weekly

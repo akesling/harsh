@@ -1,3 +1,6 @@
+# NOTE: this is the original design brief for harsh, kept for history.
+# It is not loaded at runtime — the system prompt lives in HARSH_SYSTEM_PROMPT.
+
 This project is to be an agent harness like no other.  Pure portable shell.  The
 core, fully functional on its own, is a script which takes a folder of input
 files, one per turn/toolcall/etc. appropriately named, with a manifest.csv with

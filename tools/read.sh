@@ -13,6 +13,20 @@ _path=$(printf '%s' "${_input}" | jq -r '.path // empty')
 [ -f "${_path}" ] || { echo "error: no such file: ${_path}"; exit 1; }
 _off=$(printf '%s' "${_input}" | jq -r '.offset // 1')
 _lim=$(printf '%s' "${_input}" | jq -r '.limit // 0')
-awk -v o="${_off}" -v l="${_lim}" '
-  NR >= o { printf "%6d\t%s\n", NR, $0; n++; if (l > 0 && n >= l) exit }
-' "${_path}"
+# A bad offset/limit must be an error, not a silent empty read.
+case "${_off}" in ''|*[!0-9]*) echo "error: offset must be a non-negative integer"; exit 1 ;; esac
+case "${_lim}" in ''|*[!0-9]*) echo "error: limit must be a non-negative integer"; exit 1 ;; esac
+[ "${_off}" -ge 1 ] || _off=1
+# Number and slice in plain shell (no awk — see STYLE.md). `|| [ -n "$_l" ]`
+# keeps a final line that lacks a trailing newline.
+_n=0; _shown=0
+while IFS= read -r _l || [ -n "${_l}" ]; do
+  _n=$((_n + 1))
+  [ "${_n}" -lt "${_off}" ] && continue
+  printf '%6d\t%s\n' "${_n}" "${_l}"
+  _shown=$((_shown + 1))
+  if [ "${_lim}" -gt 0 ] && [ "${_shown}" -ge "${_lim}" ]; then
+    break
+  fi
+done < "${_path}"
+exit 0

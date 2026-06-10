@@ -3,6 +3,9 @@ name: ci
 # Quality gates for every push to main and every pull request. Runs the same
 # checks a contributor runs locally (scripts/quality_gates.sh) plus the site's
 # unit tests and a build, so a broken shell script or a broken tour never lands.
+# The tests jobs re-run the hermetic suite with the harness under each shell we
+# claim to support (HARSH_TEST_SH), on Linux and macOS — the portability claim
+# is executed, not just parsed.
 on:
   push:
     branches: [main]
@@ -21,22 +24,52 @@ jobs:
     name: shell quality gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      # quality_gates.sh shells out to jq, shellcheck, and dash/bash/zsh for the
-      # multi-shell parse. ubuntu-latest ships jq, bash, and dash; add the rest.
+      # quality_gates.sh shells out to jq, shellcheck, and dash/bash/zsh/busybox
+      # for the multi-shell parse. ubuntu-latest ships jq, bash, and dash; add
+      # the rest.
       - name: Install tooling
-        run: sudo apt-get update && sudo apt-get install -y shellcheck zsh
+        run: sudo apt-get update && sudo apt-get install -y shellcheck zsh busybox
 
       - name: Run quality gates
         run: sh scripts/quality_gates.sh
+
+  tests:
+    name: tests (${{ matrix.shell }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shell: dash,         package: dash }
+          - { shell: bash,         package: bash }
+          - { shell: zsh,          package: zsh }
+          - { shell: 'busybox sh', package: busybox }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install shell
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.package }}
+
+      - name: Run test suite under ${{ matrix.shell }}
+        run: HARSH_TEST_SH='${{ matrix.shell }}' sh tests/run.sh
+
+  tests-macos:
+    name: tests (macOS, BSD userland)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Run test suite
+        run: sh tests/run.sh
 
   site:
     name: site (build + tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
       - name: Install deps
         working-directory: site

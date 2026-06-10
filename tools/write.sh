@@ -10,6 +10,10 @@ fi
 _input=$(cat)
 _path=$(printf '%s' "${_input}" | jq -r '.path // empty')
 [ -n "${_path}" ] || { echo "error: missing 'path'"; exit 1; }
+# Validate before touching the file: without this, a call missing `content`
+# would clobber the target with the literal string "null".
+printf '%s' "${_input}" | jq -e '(.content | type) == "string"' >/dev/null 2>&1 \
+  || { echo "error: missing or non-string 'content'"; exit 1; }
 _dir=$(dirname "${_path}")
 mkdir -p "${_dir}" || { echo "error: cannot create ${_dir}"; exit 1; }
 printf '%s' "${_input}" | jq -j '.content' > "${_path}" || { echo "error: write failed"; exit 1; }

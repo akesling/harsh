@@ -1,7 +1,7 @@
 # lib/render.sh — shared presentation helpers for harsh.
 #
-# Sourced by both the core REPL (harsh.sh) and the chat TUI (harsh_tui.sh) so
-# the two never drift in look. Defines an ANSI palette (auto-disabled off a TTY
+# Sourced by the core REPL (harsh.sh) and the transcript commands (show) so
+# they never drift in look. Defines an ANSI palette (auto-disabled off a TTY
 # or under NO_COLOR) and fmt_markdown, a dependency-free markdown highlighter.
 #
 # This file is sourced, not executed: it must define variables/functions only
@@ -9,7 +9,7 @@
 # caller may pre-disable color (e.g. force NO_COLOR) before sourcing.
 #
 # This is a palette library: several colors are consumed by the sourcing scripts
-# (harsh.sh, harsh_tui.sh) rather than within this file, so disable the
+# (harsh.sh) rather than within this file, so disable the
 # unused-variable check file-wide.
 # shellcheck disable=SC2034
 
@@ -41,7 +41,7 @@ unset _loc
 
 # Left-gutter glyph that ties every (possibly wrapped) line of an entry to its
 # speaker. Like BULLET it must be ASCII-safe outside a UTF-8 locale, since it is
-# fed to BSD sed. Kept here so REPL and TUI share one look.
+# fed to BSD sed. Kept here so the REPL and `show` share one look.
 case "${BULLET}" in
   '•') GUTTER='▌' ;;
   *)   GUTTER='|' ;;
@@ -133,8 +133,8 @@ render_user() {
 }
 
 # render_transcript DIR [FROM_SEQ] — replay a whole session as colorized,
-# headered, markdown-highlighted turns: the exact look of the live REPL/TUI, so
-# `harsh show` (and hence /resume) never drift from them. Prose gets a speaker
+# headered, markdown-highlighted turns: the exact look of the live REPL, so
+# `harsh show` (and hence /resume) never drifts from it. Prose gets a speaker
 # header + clean indent; tool mechanics collapse to one dim line each (expandable
 # via /verbose). FROM_SEQ, if given, anchors the view to entries with SEQ >= it.
 render_transcript() {

@@ -11,6 +11,9 @@ _input=$(cat)
 _cmd=$(printf '%s' "${_input}" | jq -r '.command // empty')
 [ -n "${_cmd}" ] || { echo "error: missing 'command'"; exit 1; }
 _to=$(printf '%s' "${_input}" | jq -r '.timeout // empty')
+case "${_to}" in
+  *[!0-9]*) echo "error: timeout must be an integer number of seconds"; exit 1 ;;
+esac
 if [ -n "${_to}" ] && command -v timeout >/dev/null 2>&1; then
   timeout "${_to}" sh -c "${_cmd}" 2>&1
 else
