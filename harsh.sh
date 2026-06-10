@@ -173,25 +173,53 @@ add_entry() {
 # order. Hook exit codes (the Claude Code contract): 2 = block (its stdout is the
 # reason; stops and returns 2); 0 = allow (stdout collected as context); other =
 # error, logged to hooks.log and ignored. On allow, prints the context, returns 0.
+#
+# Payload rewrite (opt-in): if HARSH_HOOK_REWRITE_OUT names a file in the env, a
+# hook may rewrite the event payload by writing a replacement JSON object to
+# that file (the same write-to-a-file channel as resume's HARSH_SESSION_OUT,
+# since a child process can't hand structured data back up any other way). The
+# rewritten payload is fed to *subsequent* hooks, so an ordered chain composes
+# (e.g. authorize the original command, then wrap it for sandboxed execution);
+# run_hooks leaves the final payload in the file for the caller, or empties it
+# if nothing rewrote. Invalid JSON from a hook is ignored (the prior payload
+# stands). When the var is unset, behavior is exactly as before.
 run_hooks() {
   _event=$1; _payload=$2; _tool=${3:-}
   _base="${HARSH_HOOKS_DIR}/${_event}"
   _ctx=""
+  _rw=${HARSH_HOOK_REWRITE_OUT:-}; _rewrote=0
   mkdir -p "${HARSH_LOG_DIR}" 2>/dev/null || true
   # Scan the event dir (runs for everything), then the tool-specific subdir.
   for _d in "${_base}" "${_tool:+${_base}/${_tool}}"; do
     { [ -n "${_d}" ] && [ -d "${_d}" ]; } || continue
     for _h in "${_d}"/*.sh; do
       [ -f "${_h}" ] || continue
+      # Clear the rewrite slot so we only see what THIS hook writes.
+      [ -n "${_rw}" ] && : > "${_rw}"
       _out=$(printf '%s' "${_payload}" | sh "${_h}" 2>>"${HARSH_LOG_DIR}/hooks.log"); _rc=$?
       case ${_rc} in
-        0) [ -n "${_out}" ] && _ctx="${_ctx}${_out}
-" ;;
+        0)
+          [ -n "${_out}" ] && _ctx="${_ctx}${_out}
+"
+          # Adopt a valid rewrite for downstream hooks; ignore garbage.
+          if [ -n "${_rw}" ] && [ -s "${_rw}" ]; then
+            _cand=$(cat "${_rw}")
+            if printf '%s' "${_cand}" | jq -e 'type=="object"' >/dev/null 2>&1; then
+              _payload=${_cand}; _rewrote=1
+            else
+              warn "[hook] ${_event}/$(basename "${_h}") wrote an invalid rewrite (ignored)"
+            fi
+          fi ;;
         2) printf '%s' "${_out}"; return 2 ;;
         *) warn "[hook] ${_event}/$(basename "${_h}") exited ${_rc} (ignored)" ;;
       esac
     done
   done
+  # Persist the final payload for the caller (or leave the slot empty if nothing
+  # changed, so the caller can cheaply tell whether a rewrite happened).
+  if [ -n "${_rw}" ]; then
+    if [ "${_rewrote}" = 1 ]; then printf '%s' "${_payload}" > "${_rw}"; else : > "${_rw}"; fi
+  fi
   printf '%s' "${_ctx}"
   return 0
 }
@@ -751,12 +779,24 @@ normalize_response() {
 do_tool_call() {
   _d=$1; _t=$2
   _id=$(jqv "${_t}" -r '.id'); _name=$(jqv "${_t}" -r '.name'); _input=$(jqv "${_t}" -c '.input')
-  # PreToolUse — a hook may deny the call (exit 2); its reason is fed back to the
-  # model as the (error) tool_result, and the tool is not run.
+  # PreToolUse — a hook may deny the call (exit 2; its reason is fed back to the
+  # model as the error tool_result and the tool is not run) or rewrite the
+  # tool_input (via the rewrite channel below). The rewrite slot is a temp file
+  # PreToolUse hooks write a replacement payload to; we adopt its .tool_input.
   _prepay=$(jq -nc --arg e PreToolUse --arg s "${_d}" --arg n "${_name}" --argjson in "${_input}" \
             '{event:$e,session_dir:$s,tool_name:$n,tool_input:$in}')
   _disp=""
-  if _reason=$(run_hooks PreToolUse "${_prepay}" "${_name}"); then
+  _rwf=$(mktemp 2>/dev/null || echo "/tmp/harsh_rw.$$"); : > "${_rwf}"
+  if _reason=$(HARSH_HOOK_REWRITE_OUT="${_rwf}" run_hooks PreToolUse "${_prepay}" "${_name}"); then
+    # A hook rewrote the input — adopt the new .tool_input for execution,
+    # rendering, and PostToolUse. (run_hooks already validated it as JSON.)
+    if [ -s "${_rwf}" ]; then
+      _newin=$(jq -c '.tool_input' "${_rwf}" 2>/dev/null)
+      if [ -n "${_newin}" ] && [ "${_newin}" != null ]; then
+        [ "${_newin}" = "${_input}" ] || say "${C_DIM}↻ ${_name} input rewritten by hook${C_RST}"
+        _input=${_newin}
+      fi
+    fi
     # fd 3 is a display side-channel: a tool can write rich, human-only output
     # there (e.g. edit's colored diff) that we show the user but never feed back
     # to the model. Captured to a temp file, separate from stdout (the
@@ -775,6 +815,7 @@ do_tool_call() {
     say "${C_TOOL}⛔ ${_name} blocked by hook:${C_RST} ${_reason}"
     _out="Tool call blocked by hook: ${_reason}"; _err=true
   fi
+  rm -f "${_rwf}"
   _block=$(jq -nc --arg id "${_id}" --arg out "${_out}" --argjson e "${_err}" \
     '{type:"tool_result", tool_use_id:$id, content:$out, is_error:$e}')
   _rseq=$(next_seq "${_d}")   # the #handle for `verbose`, captured before the write

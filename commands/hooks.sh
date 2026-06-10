@@ -5,7 +5,7 @@ set -u
 _d=${HARSH_HOOKS_DIR}
 [ -d "${_d}" ] || { echo "(no hooks directory: ${_d})"; exit 0; }
 _found=0
-for _evt in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
+for _evt in SessionStart UserPromptSubmit PreToolUse PostToolUse PreCompact Stop; do
   for _h in "${_d}/${_evt}"/*.sh "${_d}/${_evt}"/*/*.sh; do
     [ -f "${_h}" ] || continue
     _found=1

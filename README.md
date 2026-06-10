@@ -190,8 +190,8 @@ JSON on stdin:
 hooks/
 ├── SessionStart/        once, when a session is created (inject opening context)
 ├── UserPromptSubmit/    before a prompt is recorded (gate it / add context)
-├── PreToolUse/          before any tool call
-│   └── bash/            ... only before the `bash` tool (per-tool scoping)
+├── PreToolUse/          before any tool call (gate / rewrite the input)
+│   └── <tool>/          ... only before that tool (per-tool scoping)
 ├── PostToolUse/         after a tool call (append feedback)
 ├── PreCompact/          before a compaction (block it / steer the summary)
 └── Stop/                when a turn ends (force another turn)
@@ -202,11 +202,46 @@ A hook's **exit code** is its decision: `2` blocks (its stdout is the reason),
 non-blocking error. Blocking means: reject the prompt (`UserPromptSubmit`), skip
 the tool and feed the reason back to the model (`PreToolUse`), or keep going
 (`Stop`), or skip the compaction (`PreCompact`). A hook in `PreToolUse/` runs
-before every tool; one in `PreToolUse/<tool>/` runs only before that tool. List
-installed hooks with `harsh.sh hooks`. Full contract and payload shapes:
-`hooks/README.md`. Ships with `PreToolUse/bash/10-guard.sh` (an *example* guard
-— substring matching is not a security boundary, and the docs say so) and
-`SessionStart/10-context.sh` (injects cwd/git context).
+before every tool; one in `PreToolUse/<tool>/` runs only before that tool. A
+`PreToolUse` hook can also **rewrite** a call's input — write a replacement
+payload to the file named by `HARSH_HOOK_REWRITE_OUT` and the tool runs with the
+new input; rewrites chain in filename order, which is what makes sandboxing
+composable. List installed hooks with `harsh.sh hooks`. Full contract and
+payload shapes: `hooks/README.md`.
+
+### Permissions & sandboxing
+
+The permission system is **entirely hooks** — no policy logic in the core, just
+the rewrite/block contract above. harsh ships two:
+
+- **`PreToolUse/10-permissions.sh`** — a declarative, layered permission gate.
+  A first-match-wins policy (session grants → project `.harsh/permissions.json`
+  → user `~/.config/harsh/permissions.json` → a built-in default) decides
+  **allow / ask / deny** per call. `ask` prompts on the terminal — `y` once,
+  `e` edit-and-run-once, `s`/`p`/`f` persist an allow at **s**ession /
+  **p**roject / **f**orever(user) scope, `n` no — and with no terminal it fails
+  **closed**. Denials hand the model a reason it can act on. Every decision is
+  audited to `permissions.log` in the session dir, with the rule and layer that
+  fired. It's **dormant until you opt in** (`HARSH_PERMISSIONS_MODE=allow|ask|deny`,
+  or any policy file), so it changes nothing until configured. A rule can also
+  **rewrite** the call: each `*` in a `match` glob captures into `$1`, `$2`, …
+  which an optional `rewrite` template substitutes, so `git push *` can run as
+  `git push --dry-run $1`. Inspect and manage it with `harsh.sh permissions`
+  (or `/permissions` in the REPL): `permissions SESSION` shows the effective
+  merged policy, `… test TOOL ARG` dry-runs a decision, `… allow/deny TOOL
+  [--scope S]` adds a grant, `… rewrite TOOL GLOB TEMPLATE [--scope S]` adds a
+  glob-capture rewrite rule, `… log` prints the audit trail.
+- **`PreToolUse/20-sandbox.sh`** — an opt-in (`HARSH_SANDBOX=1`) rewriter that
+  wraps `bash` commands in `sandbox-exec` (macOS) or `bwrap` (Linux). It runs
+  *after* the gate, so the gate authorizes intent and the wrapper confines
+  execution: a clean **policy brain / enforcement wall** split.
+
+The gate is a **policy** gate, not a sandbox: glob-matching `bash` commands
+governs an honest-but-imprudent model (the practical case), but cannot contain
+an adversarial one (`sh -c`, `eval`, base64 all defeat it). Real containment is
+OS-level — the sandbox rewriter, or a sandboxing `tools/bash.sh` wrapper for a
+wall a hook-ordering mistake can't bypass. Both extend harsh without a line of
+core change.
 
 ## Install
 

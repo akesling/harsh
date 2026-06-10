@@ -43,6 +43,8 @@ and exits non-zero. Helpers live in `lib.sh`:
 | `cache_test.sh`    | prompt-cache breakpoints + usage accounting |
 | `tools_test.sh`    | each built-in tool + the dispatcher + input validation |
 | `hooks_test.sh`    | hook events, blocking, per-tool scoping |
+| `rewrite_test.sh`  | the PreToolUse input-rewrite channel: rewrite, chain, ignore-garbage |
+| `permissions_test.sh` | the permission gate: allow/ask/deny, TTY seam, grants, fail-closed, audit, end-to-end |
 | `commands_test.sh` | the extensible command dispatcher + surfaces |
 | `repl_test.sh`     | the non-interactive REPL (paste, escapes, resume) |
 | `agent_test.sh`    | sub-agents (the `agent` tool) |
