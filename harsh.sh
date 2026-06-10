@@ -42,8 +42,8 @@ fi
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-die()  { printf 'harsh: %s\n' "$*" >&2; exit 1; }
-say()  { [ -n "${HARSH_QUIET:-}" ] || printf '%s\n' "$*"; }
+die() { printf 'harsh: %s\n' "$*" >&2; exit 1; }
+say() { [ -n "${HARSH_QUIET:-}" ] || printf '%s\n' "$*"; }
 # warn() → stderr, so diagnostics survive command substitution (e.g. call_api,
 # whose stdout is captured by the caller).
 warn() { printf '%s\n' "$*" >&2; }
@@ -264,19 +264,27 @@ cmd_init() {
 cmd_path() { session_dir "$1"; }
 
 cmd_send() {
+  # -m META_JSON marks a synthetic entry (e.g. compact's summary): it is
+  # recorded with that metadata and bypasses UserPromptSubmit — hooks gate
+  # real user prompts, not engine bookkeeping written through a command.
+  _meta=""
+  if [ "${1:-}" = -m ]; then _meta=$2; shift 2; fi
   _dir=$(session_dir "$1"); shift; _text=$*
   [ -d "${_dir}" ] || die "no such session: ${_dir} (run: harsh.sh init)"
-  # UserPromptSubmit — a hook may reject the prompt (exit 2) or emit context that
-  # is injected just before it (consecutive user blocks merge into one message).
-  _hp=$(jq -nc --arg e UserPromptSubmit --arg s "${_dir}" --arg p "${_text}" \
-        '{event:$e,session_dir:$s,prompt:$p}')
-  if ! _hc=$(run_hooks UserPromptSubmit "${_hp}"); then
-    warn "[blocked] prompt rejected by hook: ${_hc}"
-    return 1
+  if [ -z "${_meta}" ]; then
+    # UserPromptSubmit — a hook may reject the prompt (exit 2) or emit context
+    # that is injected just before it (consecutive user blocks merge into one
+    # message).
+    _hp=$(jq -nc --arg e UserPromptSubmit --arg s "${_dir}" --arg p "${_text}" \
+          '{event:$e,session_dir:$s,prompt:$p}')
+    if ! _hc=$(run_hooks UserPromptSubmit "${_hp}"); then
+      warn "[blocked] prompt rejected by hook: ${_hc}"
+      return 1
+    fi
+    [ -n "${_hc}" ] && add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')"
   fi
-  [ -n "${_hc}" ] && add_entry "${_dir}" user text "" "$(jq -nc --arg t "${_hc}" '{type:"text",text:$t}')"
   _block=$(jq -nc --arg t "${_text}" '{type:"text",text:$t}')
-  add_entry "${_dir}" user text "" "${_block}"
+  add_entry "${_dir}" user text "" "${_block}" "${_meta}"
 }
 
 # Assemble the conversation files into a Messages-API `messages` array by
@@ -342,80 +350,53 @@ last_context_tokens() {
       + (.cache_creation_input_tokens // 0) + (.output_tokens // 0)' "$@"
 }
 
-# Compact a session: ask the model for a comprehensive summary, move every
-# entry (and the manifest) into archive/<timestamp>/ inside the session dir,
-# and restart the live session from a single summary entry. The next request
-# then carries a small context; nothing is lost — the archive keeps the full
-# history, inspectable with the usual file tools.
-#   cmd_compact SESSION
-cmd_compact() {
+# Archive a session's answered conversation into archive/<timestamp>/ inside
+# the session dir (entries + a manifest copy), resetting the live session. A
+# trailing, not-yet-answered user prompt survives in place, renumbered from
+# 0001 (tool_result entries are user-role but never pending — they pair with
+# an archived tool_use). Prints the archive directory; prints nothing and
+# succeeds when there is no completed turn to archive.
+#
+# This is the invariant-bearing write behind compaction: the engine owns the
+# on-disk format (numbering, filenames, manifest). The summarization *policy*
+# lives in the drop-in commands/compact.sh, which composes `archive` with
+# `send -m`.
+#   cmd_archive SESSION
+cmd_archive() {
   _sess=$1
   _dir=$(session_dir "${_sess}")
   [ -d "${_dir}" ] || die "no such session: ${_dir}"
-  set -- "${_dir}"/[0-9]*.json
-  [ -e "$1" ] || { say "nothing to compact in ${_dir}"; return 0; }
-
-  # PreCompact — a hook may block compaction (exit 2) or emit extra guidance
-  # that is appended to the summarizer instruction.
-  _hp=$(jq -nc --arg e PreCompact --arg s "${_dir}" '{event:$e,session_dir:$s}')
-  if ! _hint=$(run_hooks PreCompact "${_hp}"); then
-    warn "[blocked] compaction blocked by hook: ${_hint}"
-    return 1
-  fi
-
-  _instr='Summarize this entire conversation so far. The summary will REPLACE the conversation as your only context, so be comprehensive: the user'\''s goals and constraints, every decision made and why, the current state of the work, exact file paths/commands/facts that matter, and what remains to be done. Reply with the summary only.'
-  [ -n "${_hint}" ] && _instr="${_instr}
-${_hint}"
-  # Ride the instruction on the existing last user message if there is one
-  # (messages must alternate roles), else append a fresh user message. No tools:
-  # this turn must produce prose.
-  _smsgs=$(cmd_assemble "${_sess}" | jq -c --arg t "${_instr}" '
-    if (length > 0) and (.[-1].role == "user")
-    then (.[-1].content += [{type:"text",text:$t}])
-    else . + [{role:"user",content:[{type:"text",text:$t}]}] end')
-  _req=$(build_request "${_smsgs}" '[]')
-  _resp=$(call_api "${_req}" "${_dir}") || { warn "[error] compaction failed: API call failed"; return 1; }
-  _resp=$(printf '%s' "${_resp}" | normalize_response)
-  _sum=$(jqv "${_resp}" -r '.content // [] | map(select(.type=="text").text) | join("\n")')
-  [ -n "${_sum}" ] || { warn "[error] compaction failed: empty summary"; return 1; }
-
-  # A trailing, not-yet-answered user prompt must survive compaction (the
-  # auto-trigger fires between `send` and the first step). _cut is the last
-  # entry that is NOT plain user text; everything after it is the pending
-  # prompt, kept aside and re-appended after the summary. tool_result entries
-  # are user-role but never pending — they pair with an archived tool_use.
+  # _cut is the last entry that is NOT plain user text; everything after it is
+  # the pending prompt. No _cut → nothing answered → nothing to archive.
   _cut=""
   for _f in "${_dir}"/[0-9]*.json; do
+    [ -e "${_f}" ] || continue
     [ "$(jq -r '.role + "/" + .block.type' "${_f}")" = "user/text" ] || _cut=${_f}
   done
-  [ -n "${_cut}" ] || { say "nothing to compact (no completed turns)"; return 0; }
+  [ -n "${_cut}" ] || return 0
 
   _arch="${_dir}/archive/$(date -u +%Y%m%dT%H%M%SZ)"
   _keep=$(mktemp -d 2>/dev/null || echo "/tmp/harsh_keep.$$"); mkdir -p "${_keep}"
   mkdir -p "${_arch}" || die "cannot create ${_arch}"
-  _n=0; _after=0
+  _after=0
   for _f in "${_dir}"/[0-9]*.json; do
     [ -e "${_f}" ] || continue
     if [ "${_after}" = 1 ]; then
       mv "${_f}" "${_keep}/"
     else
-      mv "${_f}" "${_arch}/" && _n=$((_n + 1))
+      mv "${_f}" "${_arch}/"
       [ "${_f}" = "${_cut}" ] && _after=1
     fi
   done
   [ -f "${_dir}/manifest.csv" ] && cp "${_dir}/manifest.csv" "${_arch}/manifest.csv"
   : > "${_dir}/manifest.csv"
-  add_entry "${_dir}" user text "" \
-    "$(jq -nc --arg t "Summary of the conversation so far (earlier turns were compacted away; their full record is archived):
-
-${_sum}" '{type:"text",text:$t}')" '{"context":"compact"}'
   for _f in "${_keep}"/[0-9]*.json; do
     [ -e "${_f}" ] || continue
     add_entry "${_dir}" "$(jq -r '.role' "${_f}")" "$(jq -r '.block.type' "${_f}")" \
       "$(jq -r '.block.name // ""' "${_f}")" "$(jq -c '.block' "${_f}")"
   done
   rm -rf "${_keep}"
-  say "[harsh] compacted ${_n} entries into a summary (archive: ${_arch})"
+  printf '%s\n' "${_arch}"
 }
 
 # Call the model. Honors HARSH_MOCK for offline smoke testing.
@@ -803,13 +784,20 @@ cmd_run() {
   while [ "${_turns}" -lt "${HARSH_MAX_TURNS}" ]; do
     # Auto-compaction: without it the request grows without bound until the
     # provider rejects it. Checked before each step using the previous turn's
-    # actual usage numbers (not an estimate). A failed compaction is non-fatal —
-    # worst case the next call fails with the provider's own error.
+    # actual usage numbers (not an estimate). The engine only owns the trigger;
+    # the summarization policy is the drop-in `compact` command, resolved like
+    # any other — replace the file to change the policy, remove it to opt out.
+    # A failed (or missing) compaction is non-fatal: worst case the next call
+    # fails with the provider's own error.
     if [ "${HARSH_COMPACT_AT}" -gt 0 ]; then
       _ctx=$(last_context_tokens "${_dir}")
       if [ "${_ctx:-0}" -gt "${HARSH_COMPACT_AT}" ]; then
-        say "${C_DIM}↻ compacting context (~${_ctx} tokens > HARSH_COMPACT_AT=${HARSH_COMPACT_AT})${C_RST}"
-        cmd_compact "${_sess}" || warn "[warn] compaction failed; continuing with full context"
+        if _cp=$(resolve_command cli compact); then
+          say "${C_DIM}↻ compacting context (~${_ctx} tokens > HARSH_COMPACT_AT=${HARSH_COMPACT_AT})${C_RST}"
+          sh "${_cp}" "${_sess}" || warn "[warn] compaction failed; continuing with full context"
+        else
+          warn "[warn] context is ~${_ctx} tokens (> HARSH_COMPACT_AT) but no compact command is installed"
+        fi
       fi
     fi
     cmd_step "${_sess}"; _rc=$?
@@ -1107,13 +1095,14 @@ Interactive:
 
 Engine primitives (built in):
   init|new [NAME]        Create a session; prints its directory.
-  send SESSION TEXT...   Append a user message.
+  send [-m META] SESSION TEXT...
+                         Append a user message (-m: synthetic entry w/ metadata).
   step SESSION           Run one model turn (executes tools if requested).
   run SESSION            Run the agent loop to completion.
   ask SESSION TEXT...    send + run in one go.
   skill SESSION NAME [A] Load a skill and run it.
   assemble SESSION       Print the Messages-API messages[] array.
-  compact SESSION        Summarize + archive the conversation; restart from the summary.
+  archive SESSION        Move the answered history into archive/<ts>/ (keeps a pending prompt).
   path SESSION           Print the resolved session directory.
 
 Commands (extensible — drop a NAME.sh into \$HARSH_COMMANDS_DIR):
@@ -1161,8 +1150,12 @@ case "${_cmd}" in
   ask)      cmd_ask "$@" ;;
   skill)    cmd_skill "$@" ;;
   assemble) cmd_assemble "$@" ;;
-  compact)  cmd_compact "$@" ;;
+  archive)  cmd_archive "$@" ;;
   path)     cmd_path "$@" ;;
+  # Run hooks for EVENT with PAYLOAD_JSON (and optional per-TOOL scope):
+  # context on stdout, exit 2 = blocked. Lets drop-in commands (e.g. compact)
+  # participate in the hook system through the engine's one implementation.
+  run-hooks) run_hooks "$@" ;;
   # Print the wire request a step would send (used by commands/request.sh so the
   # provider-specific builder lives in exactly one place).
   build-request)

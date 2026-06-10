@@ -74,5 +74,8 @@ Add a feature by dropping a file in a directory, not by editing the core:
   See `commands/README.md`.
 
 The engine primitives in `harsh.sh` (`init`, `send`, `step`, `run`, `ask`,
-`assemble`, `path`, …) are reserved: commands *read* a session, the engine
-*writes* it. Don't externalize writes.
+`assemble`, `archive`, `path`, …) are reserved: commands *read* a session, the
+engine *writes* it. A command that needs to mutate state composes the write
+primitives (`send -m`, `archive`, `run-hooks`) rather than touching session
+files itself — `commands/compact.sh` is the worked example. Don't externalize
+raw writes.

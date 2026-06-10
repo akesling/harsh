@@ -123,11 +123,12 @@ along in the environment so sub-agents can't recurse forever.
 CLI verbs are a directory too. `harsh.sh` keeps a small set of **engine
 primitives** in-process — they mutate state or drive the loop and can't be
 externalized: `init`/`new`, `send`, `step`, `run`, `ask`, `skill`, `assemble`,
-`path`, and `repl` (the line-REPL loop). Everything else is a drop-in
-`commands/NAME.sh` resolved from `HARSH_COMMANDS_DIR` — including the shipped
-derived commands (`show`, `final`, `outline`, `verbose`, `manifest`, `sessions`,
-`session`, `resume`, `request`, `tools`, `schemas`, `tool`, `skills`,
-`hooks`, `config`, `version`), which are just instances of the mechanism.
+`archive`, `path`, `run-hooks`, and `repl` (the line-REPL loop). Everything
+else is a drop-in `commands/NAME.sh` resolved from `HARSH_COMMANDS_DIR` —
+including the shipped derived commands (`show`, `final`, `outline`, `verbose`,
+`manifest`, `sessions`, `session`, `resume`, `request`, `tools`, `schemas`,
+`tool`, `skills`, `hooks`, `config`, `version`, and notably `compact`), which
+are just instances of the mechanism.
 
 Even **session management is ordinary commands**: `sessions` lists, `session`
 prints the current directory, and `resume` switches the interactive session. The
@@ -296,14 +297,18 @@ Three things keep a long agentic session alive:
 - **Auto-compaction.** A conversation grows until the provider rejects it —
   unless something gives. When the previous turn's context passes
   `HARSH_COMPACT_AT` tokens (default 150 000, measured from the API's own
-  usage numbers, not an estimate), the loop asks the model for a comprehensive
-  summary, moves the *entire* history into `archive/<timestamp>/` inside the
-  session directory, and restarts the session from that one summary entry. A
-  just-typed, not-yet-answered prompt survives. Nothing is deleted — the
-  archive holds every original entry plus the manifest. Run it by hand with
-  `harsh.sh compact SESSION`; a `PreCompact` hook can block it (exit 2) or
-  append guidance to the summarizer instruction. Set `HARSH_COMPACT_AT=0` to
-  disable.
+  usage numbers, not an estimate), the loop invokes the **drop-in `compact`
+  command**, which asks the model for a comprehensive summary (in a scratch
+  `compact-*` sub-session, so the whole act is auditable), moves the history
+  into `archive/<timestamp>/` inside the session directory, and continues
+  from that one summary entry. A just-typed, not-yet-answered prompt
+  survives. Nothing is deleted — the archive holds every original entry plus
+  the manifest. Run it by hand with `harsh.sh compact SESSION` or `/compact`
+  in the REPL; a `PreCompact` hook can block it (exit 2) or append guidance
+  to the summarizer instruction. Set `HARSH_COMPACT_AT=0` to disable. The
+  engine owns only the trigger and the invariant-bearing writes (`archive`,
+  `send -m`); the summarization *policy* is `commands/compact.sh` — edit it
+  to change what the summary asks for, or delete it to opt out entirely.
 - **Retry with backoff.** Transient API failures — network errors, timeouts,
   408/429/5xx (including Anthropic's 529 overloaded) — retry up to
   `HARSH_RETRIES` times (default 3), waiting `HARSH_RETRY_DELAY` seconds
