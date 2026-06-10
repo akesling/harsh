@@ -6,16 +6,21 @@ The "double down on the core" release: the fzf TUI is gone, and the engine
 grew the features an agent loop actually needs at scale.
 
 ### Added
+- **Sessions are now an immutable log + a live view**: entry files are
+  append-only (never moved, renumbered, or deleted) and `manifest.csv` is the
+  ordered view over them that `assemble` reads. The new `remanifest`
+  primitive rewrites the view from one spec (ordered refs + composed
+  entries), retiring the outgoing view as `manifest-<ts>.csv` — so any
+  context-editing scheme is non-destructive and undoable, and copying the
+  session directory copies its entire evolution.
 - **Context compaction**: `harsh.sh compact SESSION` (also `/compact` in the
-  REPL) summarizes the conversation, archives the full history inside the
-  session directory (`archive/<timestamp>/`), and restarts from the summary.
-  The loop auto-compacts when the last turn's context passes
-  `HARSH_COMPACT_AT` tokens (default 150000; 0 disables); a pending,
-  unanswered prompt survives. Compaction is a **drop-in command**
-  (`commands/compact.sh`) holding the summarization policy; the engine
-  contributes the invariant-bearing primitives it composes: `archive`
-  (move history aside, keep a pending prompt), `send -m` (synthetic
-  metadata-tagged entry), and `run-hooks` (fire hook events from commands).
+  REPL) summarizes the live conversation in an auditable `compact-*` scratch
+  session and rewrites the view to `[summary, pending prompt]`. The loop
+  auto-compacts when the last turn's context passes `HARSH_COMPACT_AT` tokens
+  (default 150000; 0 disables); a pending, unanswered prompt survives
+  verbatim. Compaction is a **drop-in command** (`commands/compact.sh`)
+  holding pure policy over `remanifest` + `run-hooks` (which lets commands
+  fire hook events through the engine).
 - **PreCompact hook event**: exit 2 blocks a compaction; stdout adds guidance
   to the summarizer instruction.
 - **Streaming** (`HARSH_STREAM=1`, Anthropic only): replies print live,

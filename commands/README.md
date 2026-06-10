@@ -11,19 +11,24 @@ instances of this mechanism.
 
 `harsh.sh` keeps a small set of **engine primitives** in-process — they mutate
 session state or drive the loop and can't be externalized: `init`/`new`,
-`send`, `step`, `run`, `ask`, `skill`, `assemble`, `archive`, `path`,
+`send`, `step`, `run`, `ask`, `skill`, `assemble`, `remanifest`, `path`,
 `run-hooks`, plus `repl`. These are **reserved**: a command file can't shadow
 them. Everything else is a command in this directory, built *on* the
 primitives.
 
-`compact` is the worked example of that split: the engine owns the
-invariant-bearing writes (`archive` moves the answered history aside keeping a
-pending prompt; `send -m META` records a synthetic, metadata-tagged entry) and
-the hook runner (`run-hooks EVENT PAYLOAD` — context on stdout, exit 2 =
-blocked), while `commands/compact.sh` holds the *policy*: what the summarizer
-is asked, in a scratch sub-session, with what visible. Edit the file to change
-the policy; delete it to opt out (the run loop's auto-trigger degrades to a
-warning).
+`compact` is the worked example of that split. Entry files are an immutable,
+append-only log; `manifest.csv` is the live view over them that context
+construction reads. The engine owns the view-rewrite mechanics
+(`remanifest SESSION` — a spec on stdin names the new view's entries in order,
+existing ones by seq/filename and new composed ones as `@KEY` defined in the
+spec's `entries`; the outgoing view is retired as `manifest-<ts>.csv` and no
+entry file ever moves) and the hook runner (`run-hooks EVENT PAYLOAD` —
+context on stdout, exit 2 = blocked). `commands/compact.sh` holds the
+*policy*: what the summarizer is asked, in a scratch sub-session, and what the
+new view looks like (`[summary, pending prompt]`). Edit the file to change the
+scheme — `remanifest` is general enough for pinning, selective retention, or
+any other context-editing experiment — or delete it to opt out (the run
+loop's auto-trigger degrades to a warning).
 
 ## Contract
 

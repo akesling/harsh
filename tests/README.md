@@ -37,7 +37,8 @@ and exits non-zero. Helpers live in `lib.sh`:
 |---|---|
 | `loop_test.sh`     | agent loop, on-disk format, Messages-API assembly |
 | `engine_test.sh`   | failure paths: API errors, truncation, parallel tools, HTTP retry (stubbed curl), SSE reconstruction |
-| `compact_test.sh`  | compaction: archive + restart, auto-trigger, pending-prompt survival, PreCompact hooks |
+| `compact_test.sh`  | compaction: view rewrite + log retention, auto-trigger, pending-prompt survival, PreCompact hooks |
+| `remanifest_test.sh` | the manifest-rewrite primitive: reorder/drop/compose, validation, undo |
 | `provider_test.sh` | Anthropic + OpenAI request/response shapes |
 | `cache_test.sh`    | prompt-cache breakpoints + usage accounting |
 | `tools_test.sh`    | each built-in tool + the dispatcher + input validation |

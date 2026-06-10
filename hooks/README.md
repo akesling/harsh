@@ -11,7 +11,7 @@ hooks/
 ├── PreToolUse/          before a tool call runs
 │   └── <tool>/          ... only before that specific tool (e.g. bash/)
 ├── PostToolUse/         after a tool call runs
-├── PreCompact/          before a session is compacted (summarize + archive)
+├── PreCompact/          before a session is compacted (summarize + view rewrite)
 └── Stop/                when the agent finishes a turn (end of run)
 ```
 
