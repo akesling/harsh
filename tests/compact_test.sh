@@ -1,7 +1,9 @@
 #!/usr/bin/env sh
-# Context compaction: `compact` summarizes + archives and restarts the session;
-# the auto-trigger in cmd_run fires on the previous turn's usage; a pending
-# (unanswered) prompt survives; PreCompact hooks can block.
+# Context compaction: the drop-in `compact` command summarizes + archives and
+# restarts the session (composing the engine's `archive` and `send -m`
+# primitives); the auto-trigger in cmd_run fires on the previous turn's usage
+# and resolves the command like any other; a pending (unanswered) prompt
+# survives; PreCompact hooks can block.
 
 test_compact_archives_and_restarts_from_summary() {
   _s=$(hnew cmp)
@@ -76,4 +78,36 @@ EOF
   # The mock echoes the summarizer request back, so the hook's guidance is
   # visible in the stored summary.
   assert_contains "$(hsh assemble "${_s}" | jq -r '.[0].content[0].text')" 'FOCUS-ON-THE-BUILD'
+}
+
+test_compact_is_a_drop_in_command_not_a_primitive() {
+  # compact resolves through the command dispatcher (and so appears on both
+  # surfaces, including /compact in the REPL) instead of being reserved.
+  assert_contains "$(hsh commands)" 'compact SESSION'
+  assert_contains "$(hsh commands repl)" 'compact SESSION'
+}
+
+test_missing_compact_command_degrades_gracefully() {
+  # Point the commands dir somewhere empty: the auto-trigger must warn and
+  # keep running with the full context, not die.
+  _d=$(mktemp -d); mkdir -p "${_d}/cmds" "${_d}/s"
+  printf '. %s/harsh.conf\nHARSH_COMMANDS_DIR=%s/cmds\nHARSH_SESSIONS_DIR=%s/s\nHARSH_LOG_DIR=%s/l\n' \
+    "${ROOT}" "${_d}" "${_d}" "${_d}" > "${_d}/conf"
+  _s=$(HARSH_CONFIG="${_d}/conf" sh "${ROOT}/harsh.sh" new nocompact)
+  HARSH_CONFIG="${_d}/conf" sh "${ROOT}/harsh.sh" -q ask "${_s}" 'seed' >/dev/null
+  _out=$(HARSH_CONFIG="${_d}/conf" HARSH_COMPACT_AT=5 sh "${ROOT}/harsh.sh" ask "${_s}" 'again' 2>&1); _rc=$?
+  assert_eq 0 "${_rc}" 'run must succeed without a compact command'
+  assert_contains "${_out}" 'no compact command'
+  rm -rf "${_d}"
+}
+
+test_summarizer_scratch_session_is_inspectable() {
+  _s=$(hnew cmpscratch)
+  hsh -q ask "${_s}" 'a turn' >/dev/null
+  hsh -q compact "${_s}" || fail "compact failed"
+  # The summarizer ran as a normal harsh session, prefixed compact-, so the
+  # whole compaction is auditable with the usual tools.
+  _sdir=$(dirname "$(hsh path cmpscratch)")
+  set -- "${_sdir}"/compact-cmpscratch-*
+  [ -d "$1" ] || fail "no compact- scratch session found"
 }

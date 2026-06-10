@@ -6,11 +6,16 @@ The "double down on the core" release: the fzf TUI is gone, and the engine
 grew the features an agent loop actually needs at scale.
 
 ### Added
-- **Context compaction**: `harsh.sh compact SESSION` summarizes the
-  conversation, archives the full history inside the session directory
-  (`archive/<timestamp>/`), and restarts from the summary. The loop
-  auto-compacts when the last turn's context passes `HARSH_COMPACT_AT` tokens
-  (default 150000; 0 disables); a pending, unanswered prompt survives.
+- **Context compaction**: `harsh.sh compact SESSION` (also `/compact` in the
+  REPL) summarizes the conversation, archives the full history inside the
+  session directory (`archive/<timestamp>/`), and restarts from the summary.
+  The loop auto-compacts when the last turn's context passes
+  `HARSH_COMPACT_AT` tokens (default 150000; 0 disables); a pending,
+  unanswered prompt survives. Compaction is a **drop-in command**
+  (`commands/compact.sh`) holding the summarization policy; the engine
+  contributes the invariant-bearing primitives it composes: `archive`
+  (move history aside, keep a pending prompt), `send -m` (synthetic
+  metadata-tagged entry), and `run-hooks` (fire hook events from commands).
 - **PreCompact hook event**: exit 2 blocks a compaction; stdout adds guidance
   to the summarizer instruction.
 - **Streaming** (`HARSH_STREAM=1`, Anthropic only): replies print live,
