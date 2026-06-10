@@ -7,12 +7,17 @@
   `hooks/PreToolUse/10-permissions.sh` is a declarative, layered gate
   (session grants → project `.harsh/permissions.json` → user config → built-in
   default) deciding allow / ask / deny per call. `ask` prompts on the terminal
-  (`y`/`a`/`n`), persists session grants, and fails **closed** with no
-  terminal; denials teach the model; every decision is audited to
-  `permissions.log` in the session dir. Dormant until opted in via
-  `HARSH_PERMISSIONS_MODE` or a policy file. Manage with `harsh.sh permissions`
-  (`/permissions` in the REPL). Replaces the old `PreToolUse/bash/10-guard.sh`
-  example, whose rules became the default policy.
+  — `y` once, `e` edit-and-run-once, `s`/`p`/`f` to persist an allow at
+  **session / project / forever(user)** scope, `n` no — persists grants, and
+  fails **closed** with no terminal; denials teach the model; every decision is
+  audited to `permissions.log` in the session dir. **Glob-capture rewrites**: a
+  rule's `match` globs capture (`*` → `$1`, `$2`, …) and an optional `rewrite`
+  template substitutes them, so an allowed `git push *` can run
+  `git push --dry-run $1`. Dormant until opted in via `HARSH_PERMISSIONS_MODE`
+  or a policy file. Manage with `harsh.sh permissions` (`/permissions` in the
+  REPL): `test`, `allow`/`deny`/`rewrite` with `--scope`, `clear`, `log`.
+  Replaces the old `PreToolUse/bash/10-guard.sh` example, whose rules became
+  the default policy.
 - **PreToolUse input rewriting**: a hook may rewrite a tool call's input by
   writing a replacement payload to `HARSH_HOOK_REWRITE_OUT`. Rewrites chain in
   filename order, so authorization and execution-wrapping compose. Generic and

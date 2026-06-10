@@ -87,13 +87,21 @@ Parse it with jq, e.g. `cmd=$(jq -r '.tool_input.command // ""')`.
 - **`PreToolUse/10-permissions.sh`** — the tool **permission gate**: a
   declarative, layered policy (session grants → project `.harsh/permissions.json`
   → user `~/.config/harsh/permissions.json` → built-in default) decides
-  allow / ask / deny per call. "ask" prompts on the terminal and can persist a
-  session grant; with no terminal it fails **closed**. It is dormant until you
-  opt in (set `HARSH_PERMISSIONS_MODE=allow|ask|deny` or drop a policy file),
-  so installing it changes nothing until configured. Shared logic lives in
-  `hooks/lib/permissions.sh`; inspect/manage it with `harsh.sh permissions`.
-  This is a **policy** gate, not a sandbox — it governs an honest model's
-  *intent*; it cannot contain an adversarial one.
+  allow / ask / deny per call. "ask" prompts on the terminal — `y` once, `e`
+  edit-and-run-once, `s`/`p`/`f` persist an allow at **s**ession/**p**roject/
+  **f**orever(user) scope, `n` no — and with no terminal it fails **closed**.
+  It is dormant until you opt in (set `HARSH_PERMISSIONS_MODE=allow|ask|deny`
+  or drop a policy file), so installing it changes nothing until configured.
+  Shared logic lives in `hooks/lib/permissions.sh`; inspect/manage it with
+  `harsh.sh permissions`. This is a **policy** gate, not a sandbox — it governs
+  an honest model's *intent*; it cannot contain an adversarial one.
+
+  A rule's `match` globs **capture**: each `*` becomes `$1`, `$2`, … which an
+  optional `rewrite` substitutes to transform an allowed call —
+  `{"tool":"bash","match":{"command":"git push *"},"decision":"allow",`
+  `"rewrite":{"command":"git push --dry-run $1"}}` turns every push into a
+  dry-run. Author these at any scope with `harsh.sh permissions SESSION rewrite
+  TOOL GLOB TEMPLATE [--scope session|project|user]`.
 - **`PreToolUse/20-sandbox.sh`** — an opt-in (`HARSH_SANDBOX=1`) **rewriter**
   that wraps the `bash` command in `sandbox-exec`/`bwrap` for confined
   execution: the enforcement wall beneath the permission policy brain. A

@@ -218,15 +218,19 @@ the rewrite/block contract above. harsh ships two:
   A first-match-wins policy (session grants → project `.harsh/permissions.json`
   → user `~/.config/harsh/permissions.json` → a built-in default) decides
   **allow / ask / deny** per call. `ask` prompts on the terminal — `y` once,
-  `a` always-this-session (persisted as a session grant), `n` no — and with no
-  terminal it fails **closed**. Denials hand the model a reason it can act on.
-  Every decision is audited to `permissions.log` in the session dir, with the
-  rule and layer that fired. It's **dormant until you opt in**
-  (`HARSH_PERMISSIONS_MODE=allow|ask|deny`, or any policy file), so it changes
-  nothing until configured. Inspect and manage it with `harsh.sh permissions`
+  `e` edit-and-run-once, `s`/`p`/`f` persist an allow at **s**ession /
+  **p**roject / **f**orever(user) scope, `n` no — and with no terminal it fails
+  **closed**. Denials hand the model a reason it can act on. Every decision is
+  audited to `permissions.log` in the session dir, with the rule and layer that
+  fired. It's **dormant until you opt in** (`HARSH_PERMISSIONS_MODE=allow|ask|deny`,
+  or any policy file), so it changes nothing until configured. A rule can also
+  **rewrite** the call: each `*` in a `match` glob captures into `$1`, `$2`, …
+  which an optional `rewrite` template substitutes, so `git push *` can run as
+  `git push --dry-run $1`. Inspect and manage it with `harsh.sh permissions`
   (or `/permissions` in the REPL): `permissions SESSION` shows the effective
-  merged policy, `… test TOOL ARG` dry-runs a decision, `… allow/deny TOOL`
-  adds a session grant, `… log` prints the audit trail.
+  merged policy, `… test TOOL ARG` dry-runs a decision, `… allow/deny TOOL
+  [--scope S]` adds a grant, `… rewrite TOOL GLOB TEMPLATE [--scope S]` adds a
+  glob-capture rewrite rule, `… log` prints the audit trail.
 - **`PreToolUse/20-sandbox.sh`** — an opt-in (`HARSH_SANDBOX=1`) rewriter that
   wraps `bash` commands in `sandbox-exec` (macOS) or `bwrap` (Linux). It runs
   *after* the gate, so the gate authorizes intent and the wrapper confines
